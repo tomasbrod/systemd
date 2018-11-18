@@ -15,6 +15,7 @@
 #include "bus-error.h"
 #include "bus-util.h"
 #include "compress.h"
+#include "def.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
@@ -26,6 +27,7 @@
 #include "parse-util.h"
 #include "path-util.h"
 #include "process-util.h"
+#include "rlimit-util.h"
 #include "sigbus.h"
 #include "signal-util.h"
 #include "string-util.h"
@@ -41,7 +43,7 @@ static usec_t arg_since = USEC_INFINITY, arg_until = USEC_INFINITY;
 static const char* arg_field = NULL;
 static const char *arg_debugger = NULL;
 static const char *arg_directory = NULL;
-static bool arg_no_pager = false;
+static PagerFlags arg_pager_flags = 0;
 static int arg_no_legend = false;
 static int arg_one = false;
 static FILE* arg_output = NULL;
@@ -209,7 +211,7 @@ static int parse_argv(int argc, char *argv[]) {
                         return version();
 
                 case ARG_NO_PAGER:
-                        arg_no_pager = true;
+                        arg_pager_flags |= PAGER_DISABLE;
                         break;
 
                 case ARG_NO_LEGEND:
@@ -235,13 +237,13 @@ static int parse_argv(int argc, char *argv[]) {
                 case 'S':
                         r = parse_timestamp(optarg, &arg_since);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse timestamp: %s", optarg);
+                                return log_error_errno(r, "Failed to parse timestamp '%s': %m", optarg);
                         break;
 
                 case 'U':
                         r = parse_timestamp(optarg, &arg_until);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse timestamp: %s", optarg);
+                                return log_error_errno(r, "Failed to parse timestamp '%s': %m", optarg);
                         break;
 
                 case 'F':
@@ -657,7 +659,7 @@ static int dump_list(int argc, char **argv, void *userdata) {
         if (r < 0)
                 return r;
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         /* The coredumps are likely to compressed, and for just
          * listing them we don't need to decompress them, so let's
@@ -1066,6 +1068,9 @@ int main(int argc, char *argv[]) {
         setlocale(LC_ALL, "");
         log_parse_environment();
         log_open();
+
+        /* The journal merging logic potentially needs a lot of fds. */
+        (void) rlimit_nofile_bump(HIGH_RLIMIT_NOFILE);
 
         r = parse_argv(argc, argv);
         if (r <= 0)

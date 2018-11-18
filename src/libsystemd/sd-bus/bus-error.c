@@ -205,8 +205,7 @@ _public_ void sd_bus_error_free(sd_bus_error *e) {
                 free((void*) e->message);
         }
 
-        e->name = e->message = NULL;
-        e->_need_free = 0;
+        *e = SD_BUS_ERROR_NULL;
 }
 
 _public_ int sd_bus_error_set(sd_bus_error *e, const char *name, const char *message) {
@@ -306,6 +305,28 @@ _public_ int sd_bus_error_copy(sd_bus_error *dest, const sd_bus_error *e) {
 
 finish:
         return -bus_error_name_to_errno(e->name);
+}
+
+_public_ int sd_bus_error_move(sd_bus_error *dest, sd_bus_error *e) {
+        int r;
+
+        if (!sd_bus_error_is_set(e)) {
+
+                if (dest)
+                        *dest = SD_BUS_ERROR_NULL;
+
+                return 0;
+        }
+
+        r = -bus_error_name_to_errno(e->name);
+
+        if (dest) {
+                *dest = *e;
+                *e = SD_BUS_ERROR_NULL;
+        } else
+                sd_bus_error_free(e);
+
+        return r;
 }
 
 _public_ int sd_bus_error_set_const(sd_bus_error *e, const char *name, const char *message) {

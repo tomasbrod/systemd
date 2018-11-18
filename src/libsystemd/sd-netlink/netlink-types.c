@@ -17,7 +17,7 @@
 #include <linux/if_tunnel.h>
 #include <linux/veth.h>
 
-#if HAVE_FOU_CMD_GET
+#if HAVE_LINUX_FOU_H
 #include <linux/fou.h>
 #endif
 
@@ -224,6 +224,9 @@ static const NLType rtnl_link_info_data_bond_types[] = {
         [IFLA_BOND_AD_LACP_RATE]        = { .type = NETLINK_TYPE_U8 },
         [IFLA_BOND_AD_SELECT]           = { .type = NETLINK_TYPE_U8 },
         [IFLA_BOND_AD_INFO]             = { .type = NETLINK_TYPE_NESTED },
+        [IFLA_BOND_AD_ACTOR_SYS_PRIO]   = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BOND_AD_USER_PORT_KEY]    = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BOND_AD_ACTOR_SYSTEM]     = { .type = NETLINK_TYPE_ETHER_ADDR },
 };
 
 static const NLType rtnl_link_info_data_iptun_types[] = {
@@ -685,7 +688,7 @@ static const NLType genl_wireguard_peer_types[] = {
         [WGPEER_A_PUBLIC_KEY] = { .size = WG_KEY_LEN  },
         [WGPEER_A_FLAGS] = { .type = NETLINK_TYPE_U32 },
         [WGPEER_A_PRESHARED_KEY] = { .size = WG_KEY_LEN },
-        [WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL] = { .type = NETLINK_TYPE_U32 },
+        [WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL] = { .type = NETLINK_TYPE_U16 },
         [WGPEER_A_ENDPOINT] = { /* either size of sockaddr_in or sockaddr_in6 depending on address family */ },
         [WGPEER_A_ALLOWEDIPS] = { .type = NETLINK_TYPE_NESTED, .type_system = &genl_wireguard_allowedip_type_system },
 };

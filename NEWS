@@ -27,6 +27,49 @@ CHANGES WITH 240 in spe:
           non-transient services (i.e. those defined with unit files on disk)
           we will continue to default to Type=simple.
 
+        * The Linux kernel's current default RLIMIT_NOFILE resource limit for
+          userspace processes is set to 1024 (soft) and 4096
+          (hard). Previously, systemd passed this on unmodified to all
+          processes it forked off. With this systemd release the hard limit
+          systemd passes on is increased to 256K, overriding the kernel's
+          defaults and substantially increasing the number of simultaneous file
+          descriptors unprivileged userspace processes can allocate. Note that
+          the soft limit remains at 1024 for compatibility reasons: the
+          traditional UNIX select() call cannot deal with file descriptors >=
+          1024 and increasing the soft limit globally might thus result in
+          programs unexpectedly allocating a high file descriptor and thus
+          failing abnormally when attempting to use it with select() (of
+          course, programs shouldn't use select() anymore, and prefer
+          poll()/epoll, but the call unfortunately remains undeservedly popular
+          at this time). This change reflects the fact that file descriptor
+          handling in the Linux kernel has been optimized in more recent
+          kernels and allocating large numbers of them should be much cheaper
+          both in memory and in performance than it used to be. Programs that
+          want to take benefit of the increased limit have to "opt-in" into
+          high file descriptors explicitly by setting their soft limit to the
+          hard limit during initialization. Of course, when doing that they
+          must do this acknowledging the fact that they cannot use select()
+          anymore (and neither can any shared library they use — or any shared
+          library used by any shared library they use and so on).
+
+        * The fs.nr_open and fs.file-max sysctls are now automatically bumped
+          to the highest possible values, as separate accounting of file
+          descriptors is no longer necessary, as memcg tracks them correctly as
+          part of the memory accounting anyway. Thus, from the four limits on
+          file descriptors currently enforced (fs.file-max, fs.nr_open,
+          RLIMIT_NOFILE hard, RLIMIT_NOFILE soft) we turn off the first two,
+          and keep only the latter two. A set of build-time options
+          (-Dbump-proc-sys-fs-file-max=no and -Dbump-proc-sys-fs-nr-open=no)
+          has been added to revert this change in behaviour, which might be
+          an option for systems that turn off memcg in the kernel.
+
+        * When no /etc/locale.conf file exists (and hence no locale settings
+          are in place), systemd will now use the "C.UTF-8" locale by default,
+          and set LANG= to it. This locale is supported by various
+          distributions including Fedora, with clear indications that upstream
+          glibc is going to make it available too. This locale enables UTF-8
+          mode by default, which appears appropriate for 2018.
+
 CHANGES WITH 239:
 
         * NETWORK INTERFACE DEVICE NAMING CHANGES: systemd-udevd's "net_id"
@@ -348,13 +391,13 @@ CHANGES WITH 239:
         * New documentation has been added to document cgroups delegation,
           portable services and the various code quality tools we have set up:
 
-          https://github.com/systemd/systemd/blob/master/doc/CGROUP_DELEGATION.md
-          https://github.com/systemd/systemd/blob/master/doc/PORTABLE_SERVICES.md
-          https://github.com/systemd/systemd/blob/master/doc/CODE_QUALITY.md
+          https://github.com/systemd/systemd/blob/master/docs/CGROUP_DELEGATION.md
+          https://github.com/systemd/systemd/blob/master/docs/PORTABLE_SERVICES.md
+          https://github.com/systemd/systemd/blob/master/docs/CODE_QUALITY.md
 
         * The Boot Loader Specification has been added to the source tree.
 
-          https://github.com/systemd/systemd/blob/master/doc/BOOT_LOADER_SPECIFICATION.md
+          https://github.com/systemd/systemd/blob/master/docs/BOOT_LOADER_SPECIFICATION.md
 
           While moving it into our source tree we have updated it and further
           changes are now accepted through the usual github PR workflow.
@@ -594,10 +637,9 @@ CHANGES WITH 237:
           different from what the documentation said, and not particularly
           useful, as repeated systemd-tmpfiles invocations would not be
           idempotent and grow such files without bounds. With this release
-          behaviour has been altered slightly, to match what the documentation
-          says: lines of this type only have an effect if the indicated files
-          don't exist yet, and only then the argument string is written to the
-          file.
+          behaviour has been altered to match what the documentation says:
+          lines of this type only have an effect if the indicated files don't
+          exist yet, and only then the argument string is written to the file.
 
         * FUTURE INCOMPATIBILITY: In systemd v238 we intend to slightly change
           systemd-tmpfiles behaviour: previously, read-only files owned by root
@@ -1670,7 +1712,7 @@ CHANGES WITH 233:
         * Documentation has been added that lists all of systemd's low-level
           environment variables:
 
-          https://github.com/systemd/systemd/blob/master/doc/ENVIRONMENT.md
+          https://github.com/systemd/systemd/blob/master/docs/ENVIRONMENT.md
 
         * sd-daemon gained a new API sd_is_socket_sockaddr() for determining
           whether a specific socket file descriptor matches a specified socket

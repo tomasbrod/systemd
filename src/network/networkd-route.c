@@ -46,17 +46,19 @@ static unsigned routes_max(void) {
 int route_new(Route **ret) {
         _cleanup_(route_freep) Route *route = NULL;
 
-        route = new0(Route, 1);
+        route = new(Route, 1);
         if (!route)
                 return -ENOMEM;
 
-        route->family = AF_UNSPEC;
-        route->scope = RT_SCOPE_UNIVERSE;
-        route->protocol = RTPROT_UNSPEC;
-        route->type = RTN_UNICAST;
-        route->table = RT_TABLE_MAIN;
-        route->lifetime = USEC_INFINITY;
-        route->quickack = -1;
+        *route = (Route) {
+                .family = AF_UNSPEC,
+                .scope = RT_SCOPE_UNIVERSE,
+                .protocol = RTPROT_UNSPEC,
+                .type = RTN_UNICAST,
+                .table = RT_TABLE_MAIN,
+                .lifetime = USEC_INFINITY,
+                .quickack = -1,
+        };
 
         *ret = TAKE_PTR(route);
 
@@ -93,18 +95,21 @@ int route_new_static(Network *network, const char *filename, unsigned section_li
                 return r;
 
         route->protocol = RTPROT_STATIC;
+        route->network = network;
+        LIST_PREPEND(routes, network->static_routes, route);
+        network->n_static_routes++;
 
         if (filename) {
                 route->section = TAKE_PTR(n);
+
+                r = hashmap_ensure_allocated(&network->routes_by_section, &network_config_hash_ops);
+                if (r < 0)
+                        return r;
 
                 r = hashmap_put(network->routes_by_section, route->section, route);
                 if (r < 0)
                         return r;
         }
-
-        route->network = network;
-        LIST_PREPEND(routes, network->static_routes, route);
-        network->n_static_routes++;
 
         *ret = TAKE_PTR(route);
 
@@ -200,6 +205,16 @@ static const struct hash_ops route_hash_ops = {
         .hash = route_hash_func,
         .compare = route_compare_func
 };
+
+bool route_equal(Route *r1, Route *r2) {
+        if (r1 == r2)
+                return true;
+
+        if (!r1 || !r2)
+                return false;
+
+        return route_compare_func(r1, r2) == 0;
+}
 
 int route_get(Link *link,
               int family,
@@ -354,10 +369,10 @@ void route_update(Route *route,
         assert(route);
         assert(src || src_prefixlen == 0);
 
-        route->src = src ? *src : (union in_addr_union) {};
+        route->src = src ? *src : IN_ADDR_NULL;
         route->src_prefixlen = src_prefixlen;
-        route->gw = gw ? *gw : (union in_addr_union) {};
-        route->prefsrc = prefsrc ? *prefsrc : (union in_addr_union) {};
+        route->gw = gw ? *gw : IN_ADDR_NULL;
+        route->prefsrc = prefsrc ? *prefsrc : IN_ADDR_NULL;
         route->scope = scope;
         route->protocol = protocol;
         route->type = type;
@@ -433,13 +448,14 @@ int route_remove(Route *route, Link *link,
         if (r < 0)
                 return log_error_errno(r, "Could not append RTA_PRIORITY attribute: %m");
 
-        if (!IN_SET(route->type, RTN_UNREACHABLE, RTN_PROHIBIT, RTN_BLACKHOLE)) {
+        if (!IN_SET(route->type, RTN_UNREACHABLE, RTN_PROHIBIT, RTN_BLACKHOLE, RTN_THROW)) {
                 r = sd_netlink_message_append_u32(req, RTA_OIF, link->ifindex);
                 if (r < 0)
                         return log_error_errno(r, "Could not append RTA_OIF attribute: %m");
         }
 
-        r = sd_netlink_call_async(link->manager->rtnl, req, callback, link, 0, NULL);
+        r = sd_netlink_call_async(link->manager->rtnl, NULL, req, callback,
+                                  link_netlink_destroy_callback, link, 0, __func__);
         if (r < 0)
                 return log_error_errno(r, "Could not send rtnetlink message: %m");
 
@@ -448,32 +464,13 @@ int route_remove(Route *route, Link *link,
         return 0;
 }
 
-static int route_expire_callback(sd_netlink *rtnl, sd_netlink_message *m, void *userdata) {
-        Link *link = userdata;
-        int r;
-
-        assert(rtnl);
-        assert(m);
-        assert(link);
-        assert(link->ifname);
-
-        if (IN_SET(link->state, LINK_STATE_FAILED, LINK_STATE_LINGER))
-                return 1;
-
-        r = sd_netlink_message_get_errno(m);
-        if (r < 0 && r != -EEXIST)
-                log_link_warning_errno(link, r, "could not remove route: %m");
-
-        return 1;
-}
-
 int route_expire_handler(sd_event_source *s, uint64_t usec, void *userdata) {
         Route *route = userdata;
         int r;
 
         assert(route);
 
-        r = route_remove(route, route->link, route_expire_callback);
+        r = route_remove(route, route->link, link_route_remove_handler);
         if (r < 0)
                 log_warning_errno(r, "Could not remove route: %m");
         else
@@ -600,7 +597,7 @@ int route_configure(
         if (r < 0)
                 return log_error_errno(r, "Could not set route type: %m");
 
-        if (!IN_SET(route->type, RTN_UNREACHABLE, RTN_PROHIBIT, RTN_BLACKHOLE)) {
+        if (!IN_SET(route->type, RTN_UNREACHABLE, RTN_PROHIBIT, RTN_BLACKHOLE, RTN_THROW)) {
                 r = sd_netlink_message_append_u32(req, RTA_OIF, link->ifindex);
                 if (r < 0)
                         return log_error_errno(r, "Could not append RTA_OIF attribute: %m");
@@ -638,7 +635,8 @@ int route_configure(
         if (r < 0)
                 return log_error_errno(r, "Could not append RTA_METRICS attribute: %m");
 
-        r = sd_netlink_call_async(link->manager->rtnl, req, callback, link, 0, NULL);
+        r = sd_netlink_call_async(link->manager->rtnl, NULL, req, callback,
+                                  link_netlink_destroy_callback, link, 0, __func__);
         if (r < 0)
                 return log_error_errno(r, "Could not send rtnetlink message: %m");
 
@@ -1062,6 +1060,8 @@ int config_parse_route_type(
                 n->type = RTN_UNREACHABLE;
         else if (streq(rvalue, "prohibit"))
                 n->type = RTN_PROHIBIT;
+        else if (streq(rvalue, "throw"))
+                n->type = RTN_THROW;
         else {
                 log_syntax(unit, LOG_ERR, filename, line, r, "Could not parse route type \"%s\", ignoring assignment: %m", rvalue);
                 return 0;

@@ -4,6 +4,7 @@
 ***/
 
 #include <getopt.h>
+#include <inttypes.h>
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@
 #include "conf-files.h"
 #include "copy.h"
 #include "fd-util.h"
+#include "fileio.h"
 #include "glob-util.h"
 #include "hashmap.h"
 #include "locale-util.h"
@@ -33,6 +35,7 @@
 #include "special.h"
 #include "strv.h"
 #include "strxcpyx.h"
+#include "time-util.h"
 #include "terminal-util.h"
 #include "unit-name.h"
 #include "util.h"
@@ -40,8 +43,6 @@
 
 #define SCALE_X (0.1 / 1000.0)   /* pixels per us */
 #define SCALE_Y (20.0)
-
-#define compare(a, b) (((a) > (b))? 1 : (((b) > (a))? -1 : 0))
 
 #define svg(...) printf(__VA_ARGS__)
 
@@ -66,7 +67,7 @@ static enum dot {
 static char** arg_dot_from_patterns = NULL;
 static char** arg_dot_to_patterns = NULL;
 static usec_t arg_fuzz = 0;
-static bool arg_no_pager = false;
+static PagerFlags arg_pager_flags = 0;
 static BusTransport arg_transport = BUS_TRANSPORT_LOCAL;
 static const char *arg_host = NULL;
 static UnitFileScope arg_scope = UNIT_FILE_SYSTEM;
@@ -191,14 +192,12 @@ static int bus_get_unit_property_strv(sd_bus *bus, const char *path, const char 
         return 0;
 }
 
-static int compare_unit_time(const void *a, const void *b) {
-        return compare(((struct unit_times *)b)->time,
-                       ((struct unit_times *)a)->time);
+static int compare_unit_time(const struct unit_times *a, const struct unit_times *b) {
+        return CMP(b->time, a->time);
 }
 
-static int compare_unit_start(const void *a, const void *b) {
-        return compare(((struct unit_times *)a)->activating,
-                       ((struct unit_times *)b)->activating);
+static int compare_unit_start(const struct unit_times *a, const struct unit_times *b) {
+        return CMP(a->activating, b->activating);
 }
 
 static void unit_times_free(struct unit_times *t) {
@@ -510,7 +509,7 @@ static int pretty_boot_time(sd_bus *bus, char **_buf) {
                         "ActiveEnterTimestampMonotonic",
                         &activated_time);
         if (r < 0) {
-                log_info_errno(r, "Could not get time to reach default.target. Continuing...");
+                log_info_errno(r, "Could not get time to reach default.target, ignoring: %m");
                 activated_time = USEC_INFINITY;
         }
 
@@ -629,7 +628,7 @@ static int analyze_plot(int argc, char *argv[], void *userdata) {
         if (n <= 0)
                 return n;
 
-        qsort(times, n, sizeof(struct unit_times), compare_unit_start);
+        typesafe_qsort(times, n, compare_unit_start);
 
         width = SCALE_X * (boot->firmware_time + boot->finish_time);
         if (width < 800.0)
@@ -812,9 +811,9 @@ static int analyze_plot(int argc, char *argv[], void *userdata) {
         return 0;
 }
 
-static int list_dependencies_print(const char *name, unsigned int level, unsigned int branches,
+static int list_dependencies_print(const char *name, unsigned level, unsigned branches,
                                    bool last, struct unit_times *times, struct boot_times *boot) {
-        unsigned int i;
+        unsigned i;
         char ts[FORMAT_TIMESPAN_MAX], ts2[FORMAT_TIMESPAN_MAX];
 
         for (i = level; i != 0; i--)
@@ -854,8 +853,7 @@ static int list_dependencies_get_dependencies(sd_bus *bus, const char *name, cha
 
 static Hashmap *unit_times_hashmap;
 
-static int list_dependencies_compare(const void *_a, const void *_b) {
-        const char **a = (const char**) _a, **b = (const char**) _b;
+static int list_dependencies_compare(char * const *a, char * const *b) {
         usec_t usa = 0, usb = 0;
         struct unit_times *times;
 
@@ -866,7 +864,7 @@ static int list_dependencies_compare(const void *_a, const void *_b) {
         if (times)
                 usb = times->activated;
 
-        return usb - usa;
+        return CMP(usb, usa);
 }
 
 static bool times_in_range(const struct unit_times *times, const struct boot_times *boot) {
@@ -874,8 +872,8 @@ static bool times_in_range(const struct unit_times *times, const struct boot_tim
                 times->activated > 0 && times->activated <= boot->finish_time;
 }
 
-static int list_dependencies_one(sd_bus *bus, const char *name, unsigned int level, char ***units,
-                                 unsigned int branches) {
+static int list_dependencies_one(sd_bus *bus, const char *name, unsigned level, char ***units,
+                                 unsigned branches) {
         _cleanup_strv_free_ char **deps = NULL;
         char **c;
         int r = 0;
@@ -891,7 +889,7 @@ static int list_dependencies_one(sd_bus *bus, const char *name, unsigned int lev
         if (r < 0)
                 return r;
 
-        qsort_safe(deps, strv_length(deps), sizeof (char*), list_dependencies_compare);
+        typesafe_qsort(deps, strv_length(deps), list_dependencies_compare);
 
         r = acquire_boot_times(bus, &boot);
         if (r < 0)
@@ -1026,7 +1024,7 @@ static int analyze_critical_chain(int argc, char *argv[], void *userdata) {
         }
         unit_times_hashmap = h;
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         puts("The time after the unit is active or started is printed after the \"@\" character.\n"
              "The time the unit takes to start is printed after the \"+\" character.\n");
@@ -1056,9 +1054,9 @@ static int analyze_blame(int argc, char *argv[], void *userdata) {
         if (n <= 0)
                 return n;
 
-        qsort(times, n, sizeof(struct unit_times), compare_unit_time);
+        typesafe_qsort(times, n, compare_unit_time);
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         for (u = times; u->has_data; u++) {
                 char ts[FORMAT_TIMESPAN_MAX];
@@ -1306,7 +1304,7 @@ static int dump(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return log_error_errno(r, "Failed to create bus connection: %m");
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         if (!sd_bus_can_send(bus, SD_BUS_TYPE_UNIX_FD))
                 return dump_fallback(bus);
@@ -1340,7 +1338,7 @@ static int cat_config(int argc, char *argv[], void *userdata) {
         char **arg;
         int r;
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         STRV_FOREACH(arg, argv + 1) {
                 const char *t = NULL;
@@ -1500,28 +1498,113 @@ static int dump_unit_paths(int argc, char *argv[], void *userdata) {
 }
 
 #if HAVE_SECCOMP
+
+static int load_kernel_syscalls(Set **ret) {
+        _cleanup_(set_free_freep) Set *syscalls = NULL;
+        _cleanup_fclose_ FILE *f = NULL;
+        int r;
+
+        /* Let's read the available system calls from the list of available tracing events. Slightly dirty, but good
+         * enough for analysis purposes. */
+
+        f = fopen("/sys/kernel/debug/tracing/available_events", "re");
+        if (!f)
+                return log_full_errno(IN_SET(errno, EPERM, EACCES, ENOENT) ? LOG_DEBUG : LOG_WARNING, errno, "Can't read open /sys/kernel/debug/tracing/available_events: %m");
+
+        for (;;) {
+                _cleanup_free_ char *line = NULL;
+                const char *e;
+
+                r = read_line(f, LONG_LINE_MAX, &line);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to read system call list: %m");
+                if (r == 0)
+                        break;
+
+                e = startswith(line, "syscalls:sys_enter_");
+                if (!e)
+                        continue;
+
+                /* These are named differently inside the kernel than their external name for historical reasons. Let's hide them here. */
+                if (STR_IN_SET(e, "newuname", "newfstat", "newstat", "newlstat", "sysctl"))
+                        continue;
+
+                r = set_ensure_allocated(&syscalls, &string_hash_ops);
+                if (r < 0)
+                        return log_oom();
+
+                r = set_put_strdup(syscalls, e);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to add system call to list: %m");
+        }
+
+        *ret = TAKE_PTR(syscalls);
+        return 0;
+}
+
+static void kernel_syscalls_remove(Set *s, const SyscallFilterSet *set) {
+        const char *syscall;
+
+        NULSTR_FOREACH(syscall, set->value) {
+                if (syscall[0] == '@')
+                        continue;
+
+                (void) set_remove(s, syscall);
+        }
+}
+
 static void dump_syscall_filter(const SyscallFilterSet *set) {
         const char *syscall;
 
-        printf("%s\n", set->name);
-        printf("    # %s\n", set->help);
+        printf("%s%s%s\n"
+               "    # %s\n",
+               ansi_highlight(),
+               set->name,
+               ansi_normal(),
+               set->help);
+
         NULSTR_FOREACH(syscall, set->value)
-                printf("    %s\n", syscall);
+                printf("    %s%s%s\n",
+                       syscall[0] == '@' ? ansi_underline() : "",
+                       syscall,
+                       ansi_normal());
 }
 
 static int dump_syscall_filters(int argc, char *argv[], void *userdata) {
         bool first = true;
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         if (strv_isempty(strv_skip(argv, 1))) {
-                int i;
+                _cleanup_(set_free_freep) Set *kernel = NULL;
+                int i, k;
+
+                k = load_kernel_syscalls(&kernel);
 
                 for (i = 0; i < _SYSCALL_FILTER_SET_MAX; i++) {
+                        const SyscallFilterSet *set = syscall_filter_sets + i;
                         if (!first)
                                 puts("");
-                        dump_syscall_filter(syscall_filter_sets + i);
+
+                        dump_syscall_filter(set);
+                        kernel_syscalls_remove(kernel, set);
                         first = false;
+                }
+
+                if (k < 0) {
+                        fputc('\n', stdout);
+                        fflush(stdout);
+                        log_notice_errno(k, "# Not showing unlisted system calls, couldn't retrieve kernel system call list: %m");
+                } else if (!set_isempty(kernel)) {
+                        const char *syscall;
+                        Iterator j;
+
+                        printf("\n"
+                               "# %sUnlisted System Calls%s (supported by the local kernel, but not included in any of the groups listed above):\n",
+                               ansi_highlight(), ansi_normal());
+
+                        SET_FOREACH(syscall, kernel, j)
+                                printf("#   %s\n", syscall);
                 }
         } else {
                 char **name;
@@ -1555,6 +1638,29 @@ static int dump_syscall_filters(int argc, char *argv[], void *userdata) {
         return -EOPNOTSUPP;
 }
 #endif
+
+static int dump_timespan(int argc, char *argv[], void *userdata) {
+        char **input_timespan;
+
+        STRV_FOREACH(input_timespan, strv_skip(argv, 1)) {
+                int r;
+                usec_t usec_magnitude = 1, output_usecs;
+                char ft_buf[FORMAT_TIMESPAN_MAX];
+
+                r = parse_time(*input_timespan, &output_usecs, USEC_PER_SEC);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to parse time span '%s': %m", *input_timespan);
+
+                printf("Original: %s\n", *input_timespan);
+                printf("      %ss: %" PRIu64 "\n", special_glyph(MU), output_usecs);
+                printf("   Human: %s\n", format_timespan(ft_buf, sizeof(ft_buf), output_usecs, usec_magnitude));
+
+                if (input_timespan[1])
+                        putchar('\n');
+        }
+
+        return EXIT_SUCCESS;
+}
 
 static int test_calendar(int argc, char *argv[], void *userdata) {
         int ret = 0, r;
@@ -1676,7 +1782,7 @@ static int help(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *link = NULL;
         int r;
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         r = terminal_urlify_man("systemd-analyze", "1", &link);
         if (r < 0)
@@ -1698,9 +1804,9 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --to-pattern=GLOB     Show only destinations in the graph\n"
                "     --fuzz=SECONDS        Also print also services which finished SECONDS\n"
                "                           earlier than the latest in the branch\n"
-               "     --man[=BOOL]          Do [not] check for existence of man pages\n\n"
-               "     --generators[=BOOL]   Do [not] run unit generators (requires privileges)\n\n"
-               "Commands:\n"
+               "     --man[=BOOL]          Do [not] check for existence of man pages\n"
+               "     --generators[=BOOL]   Do [not] run unit generators (requires privileges)\n"
+               "\nCommands:\n"
                "  time                     Print time spent in the kernel\n"
                "  blame                    Print list of running units ordered by time to init\n"
                "  critical-chain [UNIT...] Print a tree of the time critical chain of units\n"
@@ -1715,6 +1821,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "  verify FILE...           Check unit files for correctness\n"
                "  calendar SPEC...         Validate repetitive calendar time events\n"
                "  service-watchdogs [BOOL] Get/set service watchdog state\n"
+               "  timespan SPAN...         Validate a time span\n"
                "\nSee the %s for details.\n"
                , program_invocation_short_name
                , link
@@ -1820,7 +1927,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_NO_PAGER:
-                        arg_no_pager = true;
+                        arg_pager_flags |= PAGER_DISABLE;
                         break;
 
                 case 'H':
@@ -1905,6 +2012,7 @@ int main(int argc, char *argv[]) {
                 { "verify",            2,        VERB_ANY, 0,            do_verify              },
                 { "calendar",          2,        VERB_ANY, 0,            test_calendar          },
                 { "service-watchdogs", VERB_ANY, 2,        0,            service_watchdogs      },
+                { "timespan",          2,        VERB_ANY, 0,            dump_timespan          },
                 {}
         };
 

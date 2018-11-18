@@ -38,7 +38,7 @@ static void show_pid_array(
         if (n_pids == 0)
                 return;
 
-        qsort(pids, n_pids, sizeof(pid_t), pid_compare_func);
+        typesafe_qsort(pids, n_pids, pid_compare_func);
 
         /* Filter duplicates */
         for (j = 0, i = 1; i < n_pids; i++) {
@@ -339,7 +339,7 @@ int show_cgroup_get_path_and_warn(
                 const char *m;
 
                 m = strjoina("/run/systemd/machines/", machine);
-                r = parse_env_file(NULL, m, NEWLINE, "SCOPE", &unit, NULL);
+                r = parse_env_file(NULL, m, "SCOPE", &unit);
                 if (r < 0)
                         return log_error_errno(r, "Failed to load machine data: %m");
 

@@ -52,6 +52,7 @@ typedef struct Link {
         unsigned n_ref;
 
         int ifindex;
+        int master_ifindex;
         char *ifname;
         char *kind;
         unsigned short iftype;
@@ -130,6 +131,8 @@ int get_product_uuid_handler(sd_bus_message *m, void *userdata, sd_bus_error *re
 
 Link *link_unref(Link *link);
 Link *link_ref(Link *link);
+void link_netlink_destroy_callback(void *userdata);
+
 int link_get(Manager *m, int ifindex, Link **ret);
 int link_add(Manager *manager, sd_netlink_message *message, Link **ret);
 void link_drop(Link *link);
@@ -163,8 +166,10 @@ int ipv4ll_configure(Link *link);
 int dhcp4_configure(Link *link);
 int dhcp4_set_client_identifier(Link *link);
 int dhcp4_set_promote_secondaries(Link *link);
+int dhcp6_request_prefix_delegation(Link *link);
 int dhcp6_configure(Link *link);
 int dhcp6_request_address(Link *link, int ir);
+int dhcp6_lease_pd_prefix_lost(sd_dhcp6_client *client, Link* link);
 
 const char* link_state_to_string(LinkState s) _const_;
 LinkState link_state_from_string(const char *s) _pure_;
@@ -177,8 +182,6 @@ extern const sd_bus_vtable link_vtable[];
 int link_node_enumerator(sd_bus *bus, const char *path, void *userdata, char ***nodes, sd_bus_error *error);
 int link_object_find(sd_bus *bus, const char *path, const char *interface, void *userdata, void **found, sd_bus_error *error);
 int link_send_changed(Link *link, const char *property, ...) _sentinel_;
-
-DEFINE_TRIVIAL_CLEANUP_FUNC(Link*, link_unref);
 
 /* Macros which append INTERFACE= to the message */
 

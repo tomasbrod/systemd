@@ -37,7 +37,7 @@ int fd_warn_permissions(const char *path, int fd);
 int touch_file(const char *path, bool parents, usec_t stamp, uid_t uid, gid_t gid, mode_t mode);
 int touch(const char *path);
 
-int symlink_idempotent(const char *from, const char *to);
+int symlink_idempotent(const char *from, const char *to, bool make_relative);
 
 int symlink_atomic(const char *from, const char *to);
 int mknod_atomic(const char *path, mode_t mode, dev_t dev);
@@ -105,5 +105,6 @@ void unlink_tempfilep(char (*p)[]);
 int unlinkat_deallocate(int fd, const char *name, int flags);
 
 int fsync_directory_of_file(int fd);
+int fsync_path_at(int at_fd, const char *path);
 
 int open_parent(const char *path, int flags, mode_t mode);

@@ -10,6 +10,8 @@
 #include "macro.h"
 #include "time-util.h"
 
+#define LONG_LINE_MAX (1U*1024U*1024U)
+
 typedef enum {
         WRITE_STRING_FILE_CREATE            = 1 << 0,
         WRITE_STRING_FILE_ATOMIC            = 1 << 1,
@@ -17,6 +19,7 @@ typedef enum {
         WRITE_STRING_FILE_VERIFY_ON_FAILURE = 1 << 3,
         WRITE_STRING_FILE_SYNC              = 1 << 4,
         WRITE_STRING_FILE_DISABLE_BUFFER    = 1 << 5,
+        WRITE_STRING_FILE_NOFOLLOW          = 1 << 6,
 
         /* And before you wonder, why write_string_file_atomic_label_ts() is a separate function instead of just one
            more flag here: it's about linking: we don't want to pull -lselinux into all users of write_string_file()
@@ -41,10 +44,11 @@ int read_full_stream(FILE *f, char **contents, size_t *size);
 
 int verify_file(const char *fn, const char *blob, bool accept_extra_nl);
 
-int parse_env_filev(FILE *f, const char *fname, const char *separator, va_list ap);
-int parse_env_file(FILE *f, const char *fname, const char *separator, ...) _sentinel_;
-int load_env_file(FILE *f, const char *fname, const char *separator, char ***l);
-int load_env_file_pairs(FILE *f, const char *fname, const char *separator, char ***l);
+int parse_env_filev(FILE *f, const char *fname, va_list ap);
+int parse_env_file_sentinel(FILE *f, const char *fname, ...) _sentinel_;
+#define parse_env_file(f, fname, ...) parse_env_file_sentinel(f, fname, __VA_ARGS__, NULL)
+int load_env_file(FILE *f, const char *fname, char ***l);
+int load_env_file_pairs(FILE *f, const char *fname, char ***l);
 
 int merge_env_file(char ***env, FILE *f, const char *fname);
 
@@ -59,20 +63,12 @@ DIR *xopendirat(int dirfd, const char *name, int flags);
 int search_and_fopen(const char *path, const char *mode, const char *root, const char **search, FILE **_f);
 int search_and_fopen_nulstr(const char *path, const char *mode, const char *root, const char *search, FILE **_f);
 
-#define FOREACH_LINE(line, f, on_error)                         \
-        for (;;)                                                \
-                if (!fgets(line, sizeof(line), f)) {            \
-                        if (ferror(f)) {                        \
-                                on_error;                       \
-                        }                                       \
-                        break;                                  \
-                } else
-
 int fflush_and_check(FILE *f);
 int fflush_sync_and_check(FILE *f);
 
 int fopen_temporary(const char *path, FILE **_f, char **_temp_path);
 int mkostemp_safe(char *pattern);
+int fmkostemp_safe(char *pattern, const char *mode, FILE**_f);
 
 int tempfn_xxxxxx(const char *p, const char *extra, char **ret);
 int tempfn_random(const char *p, const char *extra, char **ret);

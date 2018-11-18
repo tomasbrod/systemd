@@ -911,6 +911,14 @@
           <para>Accepts the same key as <literal>[FooOverUDP]</literal></para>
         </listitem>
       </varlistentry>
+      <varlistentry>
+        <term><varname>IPv6RapidDeploymentPrefix=</varname></term>
+        <listitem>
+          <para>Reconfigure the tunnel for <ulink url="https://tools.ietf.org/html/rfc5569">IPv6 Rapid
+          Deployment</ulink>, also known as 6rd. The value is an ISP-specific IPv6 prefix with a non-zero length. Only
+          applicable to SIT tunnels.</para>
+        </listitem>
+      </varlistentry>
     </variablelist>
   </refsect1>
 
@@ -1269,6 +1277,27 @@
       </varlistentry>
 
       <varlistentry>
+        <term><varname>AdActorSystemPriority=</varname></term>
+        <listitem>
+          <para>Specifies the 802.3ad actor system priority. Ranges [1-65535].</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>AdUserPortKey=</varname></term>
+        <listitem>
+          <para>Specifies the 802.3ad user defined portion of the port key. Ranges [0-1023].</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>AdActorSystem=</varname></term>
+        <listitem>
+          <para>Specifies the 802.3ad system mac address. This can not be either NULL or Multicast.</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><varname>FailOverMACPolicy=</varname></term>
         <listitem>
           <para>Specifies whether the active-backup mode should set all slaves to
@@ -1465,15 +1494,14 @@ Protocol=4
     <example>
       <title>/etc/systemd/network/25-fou-ipip.netdev</title>
       <programlisting>[NetDev]
-[NetDev]
 Name=ipip-tun
 Kind=ipip
 
 [Tunnel]
-Independent=true
+Independent=yes
 Local=10.65.208.212
 Remote=10.65.208.211
-FooOverUDP=true
+FooOverUDP=yes
 FOUDestinationPort=5555
       </programlisting>
     </example>
@@ -1484,8 +1512,8 @@ Name=tap-test
 Kind=tap
 
 [Tap]
-MultiQueue=true
-PacketInfo=true</programlisting> </example>
+MultiQueue=yes
+PacketInfo=yes</programlisting> </example>
 
     <example>
       <title>/etc/systemd/network/25-sit.netdev</title>
@@ -1497,6 +1525,18 @@ MTUBytes=1480
 [Tunnel]
 Local=10.65.223.238
 Remote=10.65.223.239</programlisting>
+    </example>
+
+    <example>
+      <title>/etc/systemd/network/25-6rd.netdev</title>
+      <programlisting>[NetDev]
+Name=6rd-tun
+Kind=sit
+MTUBytes=1480
+
+[Tunnel]
+Local=10.65.223.238
+IPv6RapidDeploymentPrefix=2602::/24</programlisting>
     </example>
 
     <example>

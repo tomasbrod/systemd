@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: LGPL-2.1+ */
 #pragma once
 
-#if HAVE_FOU_CMD_GET
+#if HAVE_LINUX_FOU_H
 #include <linux/fou.h>
 #endif
 
 #include "in-addr-util.h"
+#include "missing.h"
 #include "netdev/netdev.h"
 
 typedef enum FooOverUDPEncapType {
@@ -32,8 +33,4 @@ extern const NetDevVTable foutnl_vtable;
 const char *fou_encap_type_to_string(FooOverUDPEncapType d) _const_;
 FooOverUDPEncapType fou_encap_type_from_string(const char *d) _pure_;
 
-int config_parse_fou_encap_type(const char *unit, const char *filename,
-                                unsigned line, const char *section,
-                                unsigned section_line, const char *lvalue,
-                                int ltype, const char *rvalue, void *data,
-                                void *userdata);
+CONFIG_PARSER_PROTOTYPE(config_parse_fou_encap_type);

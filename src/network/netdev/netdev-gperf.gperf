@@ -70,6 +70,7 @@ Tunnel.FooOverUDP,                 config_parse_bool,                    0,     
 Tunnel.FOUDestinationPort,         config_parse_ip_port,                 0,                             offsetof(Tunnel, fou_destination_port)
 Tunnel.FOUSourcePort,              config_parse_ip_port,                 0,                             offsetof(Tunnel, encap_src_port)
 Tunnel.Encapsulation,              config_parse_fou_encap_type,          0,                             offsetof(Tunnel, fou_encap_type)
+Tunnel.IPv6RapidDeploymentPrefix,  config_parse_6rd_prefix,              0,                             0
 FooOverUDP.Protocol,               config_parse_uint8,                   0,                             offsetof(FouTunnel, fou_protocol)
 FooOverUDP.Encapsulation,          config_parse_fou_encap_type,          0,                             offsetof(FouTunnel, fou_encap_type)
 FooOverUDP.Port,                   config_parse_ip_port,                 0,                             offsetof(FouTunnel, port)
@@ -108,7 +109,9 @@ GENEVE.TOS,                        config_parse_uint8,                   0,     
 GENEVE.TTL,                        config_parse_uint8,                   0,                             offsetof(Geneve, ttl)
 GENEVE.UDPChecksum,                config_parse_bool,                    0,                             offsetof(Geneve, udpcsum)
 GENEVE.UDP6ZeroCheckSumRx,         config_parse_bool,                    0,                             offsetof(Geneve, udp6zerocsumrx)
+GENEVE.UDP6ZeroChecksumRx,         config_parse_bool,                    0,                             offsetof(Geneve, udp6zerocsumrx)
 GENEVE.UDP6ZeroCheckSumTx,         config_parse_bool,                    0,                             offsetof(Geneve, udp6zerocsumtx)
+GENEVE.UDP6ZeroChecksumTx,         config_parse_bool,                    0,                             offsetof(Geneve, udp6zerocsumtx)
 GENEVE.DestinationPort,            config_parse_ip_port,                 0,                             offsetof(Geneve, dest_port)
 GENEVE.FlowLabel,                  config_parse_geneve_flow_label,       0,                             0
 Tun.OneQueue,                      config_parse_bool,                    0,                             offsetof(TunTap, one_queue)
@@ -141,6 +144,9 @@ Bond.UpDelaySec,                   config_parse_sec,                     0,     
 Bond.DownDelaySec,                 config_parse_sec,                     0,                             offsetof(Bond, downdelay)
 Bond.ARPIntervalSec,               config_parse_sec,                     0,                             offsetof(Bond, arp_interval)
 Bond.LearnPacketIntervalSec,       config_parse_sec,                     0,                             offsetof(Bond, lp_interval)
+Bond.AdActorSystemPriority,        config_parse_ad_actor_sys_prio,       0,                             offsetof(Bond, ad_actor_sys_prio)
+Bond.AdUserPortKey,                config_parse_ad_user_port_key,        0,                             offsetof(Bond, ad_user_port_key)
+Bond.AdActorSystem,                config_parse_ad_actor_system,         0,                             offsetof(Bond, ad_actor_system)
 Bridge.HelloTimeSec,               config_parse_sec,                     0,                             offsetof(Bridge, hello_time)
 Bridge.MaxAgeSec,                  config_parse_sec,                     0,                             offsetof(Bridge, max_age)
 Bridge.AgeingTimeSec,              config_parse_sec,                     0,                             offsetof(Bridge, ageing_time)

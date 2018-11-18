@@ -14,6 +14,7 @@
 #include "string-util.h"
 #include "strv.h"
 #include "test-helper.h"
+#include "tests.h"
 #include "user-util.h"
 #include "util.h"
 
@@ -296,7 +297,7 @@ static void test_shift_path(void) {
         test_shift_path_one("/foobar/waldo", "/", "/foobar/waldo");
         test_shift_path_one("/foobar/waldo", "", "/foobar/waldo");
         test_shift_path_one("/foobar/waldo", "/foobar", "/waldo");
-        test_shift_path_one("/foobar/waldo", "/fuckfuck", "/foobar/waldo");
+        test_shift_path_one("/foobar/waldo", "/hogehoge", "/foobar/waldo");
 }
 
 static void test_mask_supported(void) {
@@ -447,9 +448,7 @@ static void test_cg_get_keyed_attribute(void) {
 }
 
 int main(void) {
-        log_set_max_level(LOG_DEBUG);
-        log_parse_environment();
-        log_open();
+        test_setup_logging(LOG_DEBUG);
 
         test_path_decode_unit();
         test_path_get_unit();

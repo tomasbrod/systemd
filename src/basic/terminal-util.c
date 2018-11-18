@@ -81,35 +81,42 @@ int chvt(int vt) {
 }
 
 int read_one_char(FILE *f, char *ret, usec_t t, bool *need_nl) {
-        struct termios old_termios, new_termios;
-        char c, line[LINE_MAX];
+        _cleanup_free_ char *line = NULL;
+        struct termios old_termios;
+        int r;
 
         assert(f);
         assert(ret);
 
+        /* If this is a terminal, then switch canonical mode off, so that we can read a single character */
         if (tcgetattr(fileno(f), &old_termios) >= 0) {
-                new_termios = old_termios;
+                struct termios new_termios = old_termios;
 
                 new_termios.c_lflag &= ~ICANON;
                 new_termios.c_cc[VMIN] = 1;
                 new_termios.c_cc[VTIME] = 0;
 
                 if (tcsetattr(fileno(f), TCSADRAIN, &new_termios) >= 0) {
-                        size_t k;
+                        int c;
 
                         if (t != USEC_INFINITY) {
                                 if (fd_wait_for_event(fileno(f), POLLIN, t) <= 0) {
-                                        tcsetattr(fileno(f), TCSADRAIN, &old_termios);
+                                        (void) tcsetattr(fileno(f), TCSADRAIN, &old_termios);
                                         return -ETIMEDOUT;
                                 }
                         }
 
-                        k = fread(&c, 1, 1, f);
+                        errno = 0;
+                        c = fgetc(f);
+                        if (c == EOF)
+                                r = ferror(f) && errno > 0 ? -errno : -EIO;
+                        else
+                                r = 0;
 
-                        tcsetattr(fileno(f), TCSADRAIN, &old_termios);
+                        (void) tcsetattr(fileno(f), TCSADRAIN, &old_termios);
 
-                        if (k <= 0)
-                                return -EIO;
+                        if (r < 0)
+                                return r;
 
                         if (need_nl)
                                 *need_nl = c != '\n';
@@ -124,11 +131,13 @@ int read_one_char(FILE *f, char *ret, usec_t t, bool *need_nl) {
                         return -ETIMEDOUT;
         }
 
-        errno = 0;
-        if (!fgets(line, sizeof(line), f))
-                return errno > 0 ? -errno : -EIO;
+        /* If this is not a terminal, then read a full line instead */
 
-        truncate_nl(line);
+        r = read_line(f, 16, &line); /* longer than necessary, to eat up UTF-8 chars/vt100 key sequences */
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -EIO;
 
         if (strlen(line) != 1)
                 return -EBADMSG;
@@ -196,11 +205,13 @@ int ask_char(char *ret, const char *replies, const char *fmt, ...) {
 }
 
 int ask_string(char **ret, const char *text, ...) {
+        int r;
+
         assert(ret);
         assert(text);
 
         for (;;) {
-                char line[LINE_MAX];
+                _cleanup_free_ char *line = NULL;
                 va_list ap;
 
                 if (colors_enabled())
@@ -215,24 +226,14 @@ int ask_string(char **ret, const char *text, ...) {
 
                 fflush(stdout);
 
-                errno = 0;
-                if (!fgets(line, sizeof(line), stdin))
-                        return errno > 0 ? -errno : -EIO;
+                r = read_line(stdin, LONG_LINE_MAX, &line);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        return -EIO;
 
-                if (!endswith(line, "\n"))
-                        putchar('\n');
-                else {
-                        char *s;
-
-                        if (isempty(line))
-                                continue;
-
-                        truncate_nl(line);
-                        s = strdup(line);
-                        if (!s)
-                                return -ENOMEM;
-
-                        *ret = s;
+                if (!isempty(line)) {
+                        *ret = TAKE_PTR(line);
                         return 0;
                 }
         }
@@ -819,11 +820,11 @@ unsigned columns(void) {
         if (e)
                 (void) safe_atoi(e, &c);
 
-        if (c <= 0)
+        if (c <= 0 || c > USHRT_MAX) {
                 c = fd_columns(STDOUT_FILENO);
-
-        if (c <= 0)
-                c = 80;
+                if (c <= 0)
+                        c = 80;
+        }
 
         cached_columns = c;
         return cached_columns;
@@ -853,11 +854,11 @@ unsigned lines(void) {
         if (e)
                 (void) safe_atoi(e, &l);
 
-        if (l <= 0)
+        if (l <= 0 || l > USHRT_MAX) {
                 l = fd_lines(STDOUT_FILENO);
-
-        if (l <= 0)
-                l = 24;
+                if (l <= 0)
+                        l = 24;
+        }
 
         cached_lines = l;
         return cached_lines;
@@ -1094,17 +1095,14 @@ int openpt_in_namespace(pid_t pid, int flags) {
         if (socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) < 0)
                 return -errno;
 
-        r = safe_fork("(sd-openpt)", FORK_RESET_SIGNALS|FORK_DEATHSIG, &child);
+        r = namespace_fork("(sd-openptns)", "(sd-openpt)", NULL, 0, FORK_RESET_SIGNALS|FORK_DEATHSIG,
+                           pidnsfd, mntnsfd, -1, usernsfd, rootfd, &child);
         if (r < 0)
                 return r;
         if (r == 0) {
                 int master;
 
                 pair[0] = safe_close(pair[0]);
-
-                r = namespace_enter(pidnsfd, mntnsfd, -1, usernsfd, rootfd);
-                if (r < 0)
-                        _exit(EXIT_FAILURE);
 
                 master = posix_openpt(flags|O_NOCTTY|O_CLOEXEC);
                 if (master < 0)
@@ -1121,7 +1119,7 @@ int openpt_in_namespace(pid_t pid, int flags) {
 
         pair[1] = safe_close(pair[1]);
 
-        r = wait_for_terminate_and_check("(sd-openpt)", child, 0);
+        r = wait_for_terminate_and_check("(sd-openptns)", child, 0);
         if (r < 0)
                 return r;
         if (r != EXIT_SUCCESS)
@@ -1143,17 +1141,14 @@ int open_terminal_in_namespace(pid_t pid, const char *name, int mode) {
         if (socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) < 0)
                 return -errno;
 
-        r = safe_fork("(sd-terminal)", FORK_RESET_SIGNALS|FORK_DEATHSIG, &child);
+        r = namespace_fork("(sd-terminalns)", "(sd-terminal)", NULL, 0, FORK_RESET_SIGNALS|FORK_DEATHSIG,
+                           pidnsfd, mntnsfd, -1, usernsfd, rootfd, &child);
         if (r < 0)
                 return r;
         if (r == 0) {
                 int master;
 
                 pair[0] = safe_close(pair[0]);
-
-                r = namespace_enter(pidnsfd, mntnsfd, -1, usernsfd, rootfd);
-                if (r < 0)
-                        _exit(EXIT_FAILURE);
 
                 master = open_terminal(name, mode|O_NOCTTY|O_CLOEXEC);
                 if (master < 0)
@@ -1167,7 +1162,7 @@ int open_terminal_in_namespace(pid_t pid, const char *name, int mode) {
 
         pair[1] = safe_close(pair[1]);
 
-        r = wait_for_terminate_and_check("(sd-terminal)", child, 0);
+        r = wait_for_terminate_and_check("(sd-terminalns)", child, 0);
         if (r < 0)
                 return r;
         if (r != EXIT_SUCCESS)

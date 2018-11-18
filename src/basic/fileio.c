@@ -15,7 +15,6 @@
 
 #include "alloc-util.h"
 #include "ctype.h"
-#include "def.h"
 #include "env-util.h"
 #include "escape.h"
 #include "fd-util.h"
@@ -160,7 +159,7 @@ int write_string_file_ts(
 
                 /* We manually build our own version of fopen(..., "we") that
                  * works without O_CREAT */
-                fd = open(fn, O_WRONLY|O_CLOEXEC|O_NOCTTY);
+                fd = open(fn, O_WRONLY|O_CLOEXEC|O_NOCTTY | ((flags & WRITE_STRING_FILE_NOFOLLOW) ? O_NOFOLLOW : 0));
                 if (fd < 0) {
                         r = -errno;
                         goto fail;
@@ -368,7 +367,6 @@ int read_full_file(const char *fn, char **contents, size_t *size) {
 static int parse_env_file_internal(
                 FILE *f,
                 const char *fname,
-                const char *newline,
                 int (*push) (const char *filename, unsigned line,
                              const char *key, char *value, void *userdata, int *n_pushed),
                 void *userdata,
@@ -393,8 +391,6 @@ static int parse_env_file_internal(
                 COMMENT,
                 COMMENT_ESCAPE
         } state = PRE_KEY;
-
-        assert(newline);
 
         if (f)
                 r = read_full_stream(f, &contents, NULL);
@@ -423,7 +419,7 @@ static int parse_env_file_internal(
                         break;
 
                 case KEY:
-                        if (strchr(newline, c)) {
+                        if (strchr(NEWLINE, c)) {
                                 state = PRE_KEY;
                                 line++;
                                 n_key = 0;
@@ -445,7 +441,7 @@ static int parse_env_file_internal(
                         break;
 
                 case PRE_VALUE:
-                        if (strchr(newline, c)) {
+                        if (strchr(NEWLINE, c)) {
                                 state = PRE_KEY;
                                 line++;
                                 key[n_key] = 0;
@@ -483,7 +479,7 @@ static int parse_env_file_internal(
                         break;
 
                 case VALUE:
-                        if (strchr(newline, c)) {
+                        if (strchr(NEWLINE, c)) {
                                 state = PRE_KEY;
                                 line++;
 
@@ -528,7 +524,7 @@ static int parse_env_file_internal(
                 case VALUE_ESCAPE:
                         state = VALUE;
 
-                        if (!strchr(newline, c)) {
+                        if (!strchr(NEWLINE, c)) {
                                 /* Escaped newlines we eat up entirely */
                                 if (!GREEDY_REALLOC(value, value_alloc, n_value+2))
                                         return -ENOMEM;
@@ -554,7 +550,7 @@ static int parse_env_file_internal(
                 case SINGLE_QUOTE_VALUE_ESCAPE:
                         state = SINGLE_QUOTE_VALUE;
 
-                        if (!strchr(newline, c)) {
+                        if (!strchr(NEWLINE, c)) {
                                 if (!GREEDY_REALLOC(value, value_alloc, n_value+2))
                                         return -ENOMEM;
 
@@ -579,7 +575,7 @@ static int parse_env_file_internal(
                 case DOUBLE_QUOTE_VALUE_ESCAPE:
                         state = DOUBLE_QUOTE_VALUE;
 
-                        if (!strchr(newline, c)) {
+                        if (!strchr(NEWLINE, c)) {
                                 if (!GREEDY_REALLOC(value, value_alloc, n_value+2))
                                         return -ENOMEM;
 
@@ -590,7 +586,7 @@ static int parse_env_file_internal(
                 case COMMENT:
                         if (c == '\\')
                                 state = COMMENT_ESCAPE;
-                        else if (strchr(newline, c)) {
+                        else if (strchr(NEWLINE, c)) {
                                 state = PRE_KEY;
                                 line++;
                         }
@@ -699,17 +695,13 @@ static int parse_env_file_push(
 int parse_env_filev(
                 FILE *f,
                 const char *fname,
-                const char *newline,
                 va_list ap) {
 
         int r, n_pushed = 0;
         va_list aq;
 
-        if (!newline)
-                newline = NEWLINE;
-
         va_copy(aq, ap);
-        r = parse_env_file_internal(f, fname, newline, parse_env_file_push, &aq, &n_pushed);
+        r = parse_env_file_internal(f, fname, parse_env_file_push, &aq, &n_pushed);
         va_end(aq);
         if (r < 0)
                 return r;
@@ -717,17 +709,16 @@ int parse_env_filev(
         return n_pushed;
 }
 
-int parse_env_file(
+int parse_env_file_sentinel(
                 FILE *f,
                 const char *fname,
-                const char *newline,
                 ...) {
 
         va_list ap;
         int r;
 
-        va_start(ap, newline);
-        r = parse_env_filev(f, fname, newline, ap);
+        va_start(ap, fname);
+        r = parse_env_filev(f, fname, ap);
         va_end(ap);
 
         return r;
@@ -763,14 +754,11 @@ static int load_env_file_push(
         return 0;
 }
 
-int load_env_file(FILE *f, const char *fname, const char *newline, char ***rl) {
+int load_env_file(FILE *f, const char *fname, char ***rl) {
         char **m = NULL;
         int r;
 
-        if (!newline)
-                newline = NEWLINE;
-
-        r = parse_env_file_internal(f, fname, newline, load_env_file_push, &m, NULL);
+        r = parse_env_file_internal(f, fname, load_env_file_push, &m, NULL);
         if (r < 0) {
                 strv_free(m);
                 return r;
@@ -812,14 +800,11 @@ static int load_env_file_push_pairs(
         return 0;
 }
 
-int load_env_file_pairs(FILE *f, const char *fname, const char *newline, char ***rl) {
+int load_env_file_pairs(FILE *f, const char *fname, char ***rl) {
         char **m = NULL;
         int r;
 
-        if (!newline)
-                newline = NEWLINE;
-
-        r = parse_env_file_internal(f, fname, newline, load_env_file_push_pairs, &m, NULL);
+        r = parse_env_file_internal(f, fname, load_env_file_push_pairs, &m, NULL);
         if (r < 0) {
                 strv_free(m);
                 return r;
@@ -872,7 +857,7 @@ int merge_env_file(
          * plus "extended" substitutions, unlike other exported parsing functions.
          */
 
-        return parse_env_file_internal(f, fname, NEWLINE, merge_env_file_push, env, NULL);
+        return parse_env_file_internal(f, fname, merge_env_file_push, env, NULL);
 }
 
 static void write_env_var(FILE *f, const char *v) {
@@ -1221,6 +1206,24 @@ int mkostemp_safe(char *pattern) {
         return fd;
 }
 
+int fmkostemp_safe(char *pattern, const char *mode, FILE **ret_f) {
+        int fd;
+        FILE *f;
+
+        fd = mkostemp_safe(pattern);
+        if (fd < 0)
+                return fd;
+
+        f = fdopen(fd, mode);
+        if (!f) {
+                safe_close(fd);
+                return -errno;
+        }
+
+        *ret_f = f;
+        return 0;
+}
+
 int tempfn_xxxxxx(const char *p, const char *extra, char **ret) {
         const char *fn;
         char *t;
@@ -1492,6 +1495,7 @@ int open_serialization_fd(const char *ident) {
 }
 
 int link_tmpfile(int fd, const char *path, const char *target) {
+        int r;
 
         assert(fd >= 0);
         assert(target);
@@ -1504,8 +1508,9 @@ int link_tmpfile(int fd, const char *path, const char *target) {
          * operation currently (renameat2() does), and there is no nice way to emulate this. */
 
         if (path) {
-                if (rename_noreplace(AT_FDCWD, path, AT_FDCWD, target) < 0)
-                        return -errno;
+                r = rename_noreplace(AT_FDCWD, path, AT_FDCWD, target);
+                if (r < 0)
+                        return r;
         } else {
                 char proc_fd_path[STRLEN("/proc/self/fd/") + DECIMAL_STR_MAX(fd) + 1];
 

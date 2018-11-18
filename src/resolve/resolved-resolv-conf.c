@@ -89,7 +89,6 @@ static bool file_is_our_own(const struct stat *st) {
 int manager_read_resolv_conf(Manager *m) {
         _cleanup_fclose_ FILE *f = NULL;
         struct stat st;
-        char line[LINE_MAX];
         unsigned n = 0;
         int r;
 
@@ -137,9 +136,18 @@ int manager_read_resolv_conf(Manager *m) {
         dns_server_mark_all(m->dns_servers);
         dns_search_domain_mark_all(m->search_domains);
 
-        FOREACH_LINE(line, f, r = -errno; goto clear) {
+        for (;;) {
+                _cleanup_free_ char *line = NULL;
                 const char *a;
                 char *l;
+
+                r = read_line(f, LONG_LINE_MAX, &line);
+                if (r < 0) {
+                        log_error_errno(r, "Failed to read /etc/resolv.conf: %m");
+                        goto clear;
+                }
+                if (r == 0)
+                        break;
 
                 n++;
 

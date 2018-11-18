@@ -89,13 +89,12 @@ static int context_read_data(Context *c) {
         if (r < 0 && r != -ENOENT)
                 return r;
 
-        r = parse_env_file(NULL, "/etc/machine-info", NEWLINE,
+        r = parse_env_file(NULL, "/etc/machine-info",
                            "PRETTY_HOSTNAME", &c->data[PROP_PRETTY_HOSTNAME],
                            "ICON_NAME", &c->data[PROP_ICON_NAME],
                            "CHASSIS", &c->data[PROP_CHASSIS],
                            "DEPLOYMENT", &c->data[PROP_DEPLOYMENT],
-                           "LOCATION", &c->data[PROP_LOCATION],
-                           NULL);
+                           "LOCATION", &c->data[PROP_LOCATION]);
         if (r < 0 && r != -ENOENT)
                 return r;
 
@@ -314,7 +313,7 @@ static int context_write_data_machine_info(Context *c) {
 
         assert(c);
 
-        r = load_env_file(NULL, "/etc/machine-info", NULL, &l);
+        r = load_env_file(NULL, "/etc/machine-info", &l);
         if (r < 0 && r != -ENOENT)
                 return r;
 
@@ -732,12 +731,16 @@ int main(int argc, char *argv[]) {
         (void) sd_event_set_watchdog(event, true);
 
         r = sd_event_add_signal(event, NULL, SIGINT, NULL, NULL);
-        if (r < 0)
-                return r;
+        if (r < 0) {
+                log_error_errno(r, "Failed to install SIGINT handler: %m");
+                goto finish;
+        }
 
         r = sd_event_add_signal(event, NULL, SIGTERM, NULL, NULL);
-        if (r < 0)
-                return r;
+        if (r < 0) {
+                log_error_errno(r, "Failed to install SIGTERM handler: %m");
+                goto finish;
+        }
 
         r = connect_bus(&context, event, &bus);
         if (r < 0)

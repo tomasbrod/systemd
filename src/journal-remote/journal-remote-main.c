@@ -12,6 +12,7 @@
 #include "journal-remote-write.h"
 #include "journal-remote.h"
 #include "process-util.h"
+#include "rlimit-util.h"
 #include "signal-util.h"
 #include "socket-util.h"
 #include "stat-util.h"
@@ -559,7 +560,9 @@ static int create_remoteserver(
         if (r < 0)
                 return r;
 
-        setup_signals(s);
+        r = setup_signals(s);
+        if (r < 0)
+                return log_error_errno(r, "Failed to set up signals: %m");
 
         n = sd_listen_fds(true);
         if (n < 0)
@@ -1096,6 +1099,9 @@ int main(int argc, char **argv) {
         log_show_color(true);
         log_parse_environment();
 
+        /* The journal merging logic potentially needs a lot of fds. */
+        (void) rlimit_nofile_bump(HIGH_RLIMIT_NOFILE);
+
         r = parse_config();
         if (r < 0)
                 return EXIT_FAILURE;
@@ -1110,9 +1116,11 @@ int main(int argc, char **argv) {
                         return EXIT_FAILURE;
         }
 
-        if (arg_listen_https || https_socket >= 0)
+        if (arg_listen_https || https_socket >= 0) {
                 if (load_certificates(&key, &cert, &trust) < 0)
                         return EXIT_FAILURE;
+                s.check_trust = !arg_trust_all;
+        }
 
         if (create_remoteserver(&s, key, cert, trust) < 0)
                 return EXIT_FAILURE;

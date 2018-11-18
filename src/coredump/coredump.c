@@ -55,10 +55,15 @@
 #define EXTERNAL_SIZE_MAX PROCESS_SIZE_MAX
 
 /* The maximum size up to which we store the coredump in the journal */
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 #define JOURNAL_SIZE_MAX ((size_t) (767LU*1024LU*1024LU))
+#else
+/* oss-fuzz limits memory usage. */
+#define JOURNAL_SIZE_MAX ((size_t) (10LU*1024LU*1024LU))
+#endif
 
 /* Make sure to not make this larger than the maximum journal entry
- * size. See DATA_SIZE_MAX in journald-native.c. */
+ * size. See DATA_SIZE_MAX in journal-importer.h. */
 assert_cc(JOURNAL_SIZE_MAX <= DATA_SIZE_MAX);
 
 enum {
@@ -340,7 +345,7 @@ static int save_external_coredump(
 
         r = safe_atou64(context[CONTEXT_RLIMIT], &rlimit);
         if (r < 0)
-                return log_error_errno(r, "Failed to parse resource limit: %s", context[CONTEXT_RLIMIT]);
+                return log_error_errno(r, "Failed to parse resource limit '%s': %m", context[CONTEXT_RLIMIT]);
         if (rlimit < page_size()) {
                 /* Is coredumping disabled? Then don't bother saving/processing the coredump.
                  * Anything below PAGE_SIZE cannot give a readable coredump (the kernel uses
@@ -511,7 +516,7 @@ static int compose_open_fds(pid_t pid, char **open_fds) {
         const char *fddelim = "", *path;
         struct dirent *dent = NULL;
         size_t size = 0;
-        int r = 0;
+        int r;
 
         assert(pid >= 0);
         assert(open_fds != NULL);
@@ -534,7 +539,6 @@ static int compose_open_fds(pid_t pid, char **open_fds) {
         FOREACH_DIRENT(dent, proc_fd_dir, return -errno) {
                 _cleanup_fclose_ FILE *fdinfo = NULL;
                 _cleanup_free_ char *fdname = NULL;
-                char line[LINE_MAX];
                 int fd;
 
                 r = readlinkat_malloc(dirfd(proc_fd_dir), dent->d_name, &fdname);
@@ -555,10 +559,17 @@ static int compose_open_fds(pid_t pid, char **open_fds) {
                         continue;
                 }
 
-                FOREACH_LINE(line, fdinfo, break) {
+                for (;;) {
+                        _cleanup_free_ char *line = NULL;
+
+                        r = read_line(fdinfo, LONG_LINE_MAX, &line);
+                        if (r < 0)
+                                return r;
+                        if (r == 0)
+                                break;
+
                         fputs(line, stream);
-                        if (!endswith(line, "\n"))
-                                fputc('\n', stream);
+                        fputc('\n', stream);
                 }
         }
 

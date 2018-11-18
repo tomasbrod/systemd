@@ -266,7 +266,7 @@
           the event that there is no address being assigned by DHCP or the
           cable is not plugged in, the link will simply remain offline and be
           skipped automatically by <literal>systemd-networkd-wait-online</literal>
-          if <literal>RequiredForOnline=true</literal>.</para>
+          if <literal>RequiredForOnline=no</literal>.</para>
         </listitem>
       </varlistentry>
     </variablelist>
@@ -666,7 +666,7 @@
           <listitem><para>An IPv6 address, for which Neighbour Advertisement messages will be
           proxied. This option may be specified more than once. systemd-networkd will add the
           <option>IPv6ProxyNDPAddress=</option> entries to the kernel's IPv6 neighbor proxy table.
-          This option implies <option>IPv6ProxyNDP=true</option> but has no effect if
+          This option implies <option>IPv6ProxyNDP=yes</option> but has no effect if
           <option>IPv6ProxyNDP</option> has been set to false. Defaults to unset.
         </para></listitem>
         </varlistentry>
@@ -1077,7 +1077,7 @@
         <varlistentry>
           <term><varname>Protocol=</varname></term>
           <listitem>
-            <para>The Protocol identifier for the route. Takes a number between 0 and 255 or the special values
+            <para>The protocol identifier for the route. Takes a number between 0 and 255 or the special values
             <literal>kernel</literal>, <literal>boot</literal> and <literal>static</literal>. Defaults to
             <literal>static</literal>.
             </para>
@@ -1086,12 +1086,13 @@
         <varlistentry>
           <term><varname>Type=</varname></term>
           <listitem>
-            <para>The Type identifier for special route types, which can be
-            <literal>unicast</literal> route to a destination network address which describes the path to the destination,
-            <literal>blackhole</literal> packets are discarded silently,
-            <literal>unreachable</literal> packets are discarded and the ICMP message host unreachable is generated,
-            <literal>prohibit</literal> packets are discarded and the ICMP message communication administratively
-            prohibited is generated. Defaults to <literal>unicast</literal>.
+            <para>Specifies the type for the route. If <literal>unicast</literal>, a regular route is defined, i.e. a
+            route indicating the path to take to a destination network address. If <literal>blackhole</literal>, packets
+            to the defined route are discarded silently. If <literal>unreachable</literal>, packets to the defined route
+            are discarded and the ICMP message "Host Unreachable" is generated. If <literal>prohibit</literal>, packets
+            to the defined route are discarded and the ICMP message "Communication Administratively Prohibited" is
+            generated. If <literal>throw</literal>, route lookup in the current routing table will fail and the route
+            selection process will return to Routing Policy Database (RPDB). Defaults to <literal>unicast</literal>.
             </para>
           </listitem>
         </varlistentry>
@@ -1167,6 +1168,7 @@
           <listitem>
             <para>When true, the interface maximum transmission unit
             from the DHCP server will be used on the current link.
+            If <varname>MTUBytes=</varname> is set, then this setting is ignored.
             Defaults to false.</para>
           </listitem>
         </varlistentry>
@@ -1368,6 +1370,22 @@
             faster client configuration and is beneficial in environments in which networks are under a heavy load.
             See <ulink url="https://tools.ietf.org/html/rfc3315#section-17.2.1">RFC 3315</ulink> for details.
             Defaults to true.</para>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><varname>ForceDHCPv6PDOtherInformation=</varname></term>
+          <listitem>
+            <para>A boolean that enforces DHCPv6 stateful mode when the 'Other information' bit is set in
+            Router Advertisement messages. By default setting only the 'O' bit in Router Advertisements
+            makes DHCPv6 request network information in a stateless manner using a two-message Information
+            Request and Information Reply message exchange.
+            <ulink url="https://tools.ietf.org/html/rfc7084">RFC 7084</ulink>, requirement WPD-4, updates
+            this behavior for a Customer Edge router so that stateful DHCPv6 Prefix Delegation is also
+            requested when only the 'O' bit is set in Router Advertisements. This option enables such a CE
+            behavior as it is impossible to automatically distinguish the intention of the 'O' bit otherwise.
+            By default this option is set to 'false', enable it if no prefixes are delegated when the device
+            should be acting as a CE router.</para>
           </listitem>
         </varlistentry>
 

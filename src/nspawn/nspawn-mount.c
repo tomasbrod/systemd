@@ -69,20 +69,14 @@ void custom_mount_free_all(CustomMount *l, size_t n) {
         free(l);
 }
 
-static int custom_mount_compare(const void *a, const void *b) {
-        const CustomMount *x = a, *y = b;
+static int custom_mount_compare(const CustomMount *a, const CustomMount *b) {
         int r;
 
-        r = path_compare(x->destination, y->destination);
+        r = path_compare(a->destination, b->destination);
         if (r != 0)
                 return r;
 
-        if (x->type < y->type)
-                return -1;
-        if (x->type > y->type)
-                return 1;
-
-        return 0;
+        return CMP(a->type, b->type);
 }
 
 static bool source_path_is_valid(const char *p) {
@@ -116,7 +110,7 @@ int custom_mount_prepare_all(const char *dest, CustomMount *l, size_t n) {
         assert(l || n == 0);
 
         /* Order the custom mounts, and make sure we have a working directory */
-        qsort_safe(l, n, sizeof(CustomMount), custom_mount_compare);
+        typesafe_qsort(l, n, custom_mount_compare);
 
         for (i = 0; i < n; i++) {
                 CustomMount *m = l + i;
@@ -549,8 +543,8 @@ int mount_all(const char *dest,
 
                 /* Then we list outer child mounts (i.e. mounts applied *before* entering user namespacing) */
                 { "tmpfs",           "/tmp",            "tmpfs", "mode=1777", MS_NOSUID|MS_NODEV|MS_STRICTATIME,
-                  MOUNT_FATAL },
-                { "tmpfs",           "/sys",            "tmpfs", "mode=755",  MS_NOSUID|MS_NOEXEC|MS_NODEV,
+                  MOUNT_FATAL|MOUNT_APPLY_TMPFS_TMP },
+                { "tmpfs",           "/sys",            "tmpfs", "mode=555",  MS_NOSUID|MS_NOEXEC|MS_NODEV,
                   MOUNT_FATAL|MOUNT_APPLY_APIVFS_NETNS },
                 { "sysfs",           "/sys",            "sysfs", NULL,        MS_RDONLY|MS_NOSUID|MS_NOEXEC|MS_NODEV,
                   MOUNT_FATAL|MOUNT_APPLY_APIVFS_RO },    /* skipped if above was mounted */
@@ -576,6 +570,7 @@ int mount_all(const char *dest,
         bool netns = (mount_settings & MOUNT_APPLY_APIVFS_NETNS);
         bool ro = (mount_settings & MOUNT_APPLY_APIVFS_RO);
         bool in_userns = (mount_settings & MOUNT_IN_USERNS);
+        bool tmpfs_tmp = (mount_settings & MOUNT_APPLY_TMPFS_TMP);
         size_t k;
         int r;
 
@@ -591,6 +586,9 @@ int mount_all(const char *dest,
                         continue;
 
                 if (!ro && (bool)(mount_table[k].mount_settings & MOUNT_APPLY_APIVFS_RO))
+                        continue;
+
+                if (!tmpfs_tmp && (bool)(mount_table[k].mount_settings & MOUNT_APPLY_TMPFS_TMP))
                         continue;
 
                 r = chase_symlinks(mount_table[k].where, dest, CHASE_NONEXISTENT|CHASE_PREFIX_ROOT, &where);

@@ -36,6 +36,7 @@ shared_sources = files('''
         dropin.h
         efivars.c
         efivars.h
+        enable-mempool.c
         fdset.c
         fdset.h
         firewall-util.h
@@ -44,15 +45,17 @@ shared_sources = files('''
         generator.c
         generator.h
         gpt.h
+        id128-print.c
+        id128-print.h
         ima-util.c
         ima-util.h
         import-util.c
         import-util.h
         initreq.h
-        install.c
-        install.h
         install-printf.c
         install-printf.h
+        install.c
+        install.h
         journal-util.c
         journal-util.h
         logs-show.c
@@ -75,6 +78,8 @@ shared_sources = files('''
         resolve-util.c
         resolve-util.h
         seccomp-util.h
+        serialize.c
+        serialize.h
         sleep-config.c
         sleep-config.h
         spawn-ask-password-agent.c
@@ -87,12 +92,10 @@ shared_sources = files('''
         switch-root.h
         sysctl-util.c
         sysctl-util.h
-        tests.c
-        tests.h
         tomoyo-util.c
         tomoyo-util.h
-        udev-util.h
         udev-util.c
+        udev-util.h
         uid-range.c
         uid-range.h
         utmp-wtmp.h
@@ -104,6 +107,10 @@ shared_sources = files('''
         watchdog.h
         wireguard-netlink.h
 '''.split())
+
+if get_option('tests') != 'false'
+        shared_sources += files('tests.c', 'tests.h')
+endif
 
 test_tables_h = files('test-tables.h')
 shared_sources += test_tables_h

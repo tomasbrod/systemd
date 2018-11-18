@@ -14,8 +14,8 @@
 #include "copy.h"
 #include "crypt-util.h"
 #include "def.h"
-#include "device-enumerator-private.h"
 #include "device-nodes.h"
+#include "device-util.h"
 #include "dissect-image.h"
 #include "fd-util.h"
 #include "fileio.h"
@@ -231,7 +231,7 @@ int dissect_image(
                                 .node = TAKE_PTR(n),
                         };
 
-                        m->encrypted = streq(fstype, "crypto_LUKS");
+                        m->encrypted = streq_ptr(fstype, "crypto_LUKS");
 
                         *ret = TAKE_PTR(m);
 
@@ -278,16 +278,10 @@ int dissect_image(
                 if (r < 0)
                         return r;
 
-                r = device_enumerator_scan_devices(e);
-                if (r < 0)
-                        return r;
-
                 /* Count the partitions enumerated by the kernel */
                 n = 0;
-                FOREACH_DEVICE_AND_SUBSYSTEM(e, q) {
-                        dev_t qn;
-
-                        if (sd_device_get_devnum(q, &qn) < 0)
+                FOREACH_DEVICE(e, q) {
+                        if (sd_device_get_devnum(q, NULL) < 0)
                                 continue;
 
                         if (!device_is_block(q))
@@ -350,11 +344,7 @@ int dissect_image(
                 e = sd_device_enumerator_unref(e);
         }
 
-        r = device_enumerator_scan_devices(e);
-        if (r < 0)
-                return r;
-
-        FOREACH_DEVICE_AND_SUBSYSTEM(e, q) {
+        FOREACH_DEVICE(e, q) {
                 unsigned long long pflags;
                 blkid_partition pp;
                 const char *node;
@@ -779,7 +769,7 @@ int dissected_image_mount(DissectedImage *m, const char *where, uid_t uid_shift,
                 }
         }
 
-        if ((flags & DISSECT_IMAGE_MOUNT_ROOT_ONLY))
+        if (flags & DISSECT_IMAGE_MOUNT_ROOT_ONLY)
                 return 0;
 
         r = mount_partition(m->partitions + PARTITION_HOME, where, "/home", uid_shift, flags);
@@ -1103,7 +1093,7 @@ int dissected_image_decrypt_interactively(
 
                 z = strv_free(z);
 
-                r = ask_password_auto("Please enter image passphrase!", NULL, "dissect", "dissect", USEC_INFINITY, 0, &z);
+                r = ask_password_auto("Please enter image passphrase:", NULL, "dissect", "dissect", USEC_INFINITY, 0, &z);
                 if (r < 0)
                         return log_error_errno(r, "Failed to query for passphrase: %m");
 
@@ -1343,14 +1333,14 @@ int dissected_image_acquire_metadata(DissectedImage *m) {
                 }
 
                 case META_MACHINE_INFO:
-                        r = load_env_file_pairs(f, "machine-info", NULL, &machine_info);
+                        r = load_env_file_pairs(f, "machine-info", &machine_info);
                         if (r < 0)
                                 log_debug_errno(r, "Failed to read /etc/machine-info: %m");
 
                         break;
 
                 case META_OS_RELEASE:
-                        r = load_env_file_pairs(f, "os-release", NULL, &os_release);
+                        r = load_env_file_pairs(f, "os-release", &os_release);
                         if (r < 0)
                                 log_debug_errno(r, "Failed to read OS release file: %m");
 

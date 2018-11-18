@@ -272,14 +272,15 @@
       <varlistentry>
         <term><varname>PIDFile=</varname></term>
 
-        <listitem><para>Takes an absolute path referring to the PID file of the service. Usage of this option is
-        recommended for services where <varname>Type=</varname> is set to <option>forking</option>. The service manager
-        will read the PID of the main process of the service from this file after start-up of the service. The service
-        manager will not write to the file configured here, although it will remove the file after the service has shut
-        down if it still exists. The PID file does not need to be owned by a privileged user, but if it is owned by an
-        unprivileged user additional safety restrictions are enforced: the file may not be a symlink to a file owned by
-        a different user (neither directly nor indirectly), and the PID file must refer to a process already belonging
-        to the service.</para></listitem>
+        <listitem><para>Takes a path referring to the PID file of the service. Usage of this option is recommended for
+        services where <varname>Type=</varname> is set to <option>forking</option>. The path specified typically points
+        to a file below <filename>/run/</filename>. If a relative path is specified it is hence prefixed with
+        <filename>/run/</filename>. The service manager will read the PID of the main process of the service from this
+        file after start-up of the service. The service manager will not write to the file configured here, although it
+        will remove the file after the service has shut down if it still exists. The PID file does not need to be owned
+        by a privileged user, but if it is owned by an unprivileged user additional safety restrictions are enforced:
+        the file may not be a symlink to a file owned by a different user (neither directly nor indirectly), and the
+        PID file must refer to a process already belonging to the service.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -599,7 +600,8 @@
         "keep-alive ping"). If the time between two such calls is
         larger than the configured time, then the service is placed in
         a failed state and it will be terminated with
-        <constant>SIGABRT</constant>. By setting
+        <constant>SIGABRT</constant> (or the signal specified by
+        <varname>WatchdogSignal=</varname>). By setting
         <varname>Restart=</varname> to <option>on-failure</option>,
         <option>on-watchdog</option>, <option>on-abnormal</option> or
         <option>always</option>, the service will be automatically
@@ -828,24 +830,6 @@
         with <varname>Restart=</varname>. The argument format is
         similar to
         <varname>RestartPreventExitStatus=</varname>.</para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-        <term><varname>PermissionsStartOnly=</varname></term>
-        <listitem><para>Takes a boolean argument. If true, the
-        permission-related execution options, as configured with
-        <varname>User=</varname> and similar options (see
-        <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-        for more information), are only applied to the process started
-        with
-        <varname>ExecStart=</varname>, and not to the various other
-        <varname>ExecStartPre=</varname>,
-        <varname>ExecStartPost=</varname>,
-        <varname>ExecReload=</varname>,
-        <varname>ExecStop=</varname>, and
-        <varname>ExecStopPost=</varname>
-        commands. If false, the setting is applied to all configured
-        commands the same way. Defaults to false.</para></listitem>
       </varlistentry>
 
       <varlistentry>

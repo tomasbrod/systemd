@@ -16,6 +16,7 @@
 #include "catalog.h"
 #include "compress.h"
 #include "dirent-util.h"
+#include "escape.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
@@ -381,7 +382,7 @@ static char *match_make_string(Match *m) {
                 return strdup("none");
 
         if (m->type == MATCH_DISCRETE)
-                return strndup(m->data, m->size);
+                return cescape_length(m->data, m->size);
 
         LIST_FOREACH(matches, i, m->matches) {
                 char *t, *k;
@@ -433,6 +434,8 @@ _public_ void sd_journal_flush_matches(sd_journal *j) {
 }
 
 _pure_ static int compare_with_location(JournalFile *f, Location *l) {
+        int r;
+
         assert(f);
         assert(l);
         assert(f->location_type == LOCATION_SEEK);
@@ -449,35 +452,31 @@ _pure_ static int compare_with_location(JournalFile *f, Location *l) {
         if (l->seqnum_set &&
             sd_id128_equal(f->header->seqnum_id, l->seqnum_id)) {
 
-                if (f->current_seqnum < l->seqnum)
-                        return -1;
-                if (f->current_seqnum > l->seqnum)
-                        return 1;
+                r = CMP(f->current_seqnum, l->seqnum);
+                if (r != 0)
+                        return r;
         }
 
         if (l->monotonic_set &&
             sd_id128_equal(f->current_boot_id, l->boot_id)) {
 
-                if (f->current_monotonic < l->monotonic)
-                        return -1;
-                if (f->current_monotonic > l->monotonic)
-                        return 1;
+                r = CMP(f->current_monotonic, l->monotonic);
+                if (r != 0)
+                        return r;
         }
 
         if (l->realtime_set) {
 
-                if (f->current_realtime < l->realtime)
-                        return -1;
-                if (f->current_realtime > l->realtime)
-                        return 1;
+                r = CMP(f->current_realtime, l->realtime);
+                if (r != 0)
+                        return r;
         }
 
         if (l->xor_hash_set) {
 
-                if (f->current_xor_hash < l->xor_hash)
-                        return -1;
-                if (f->current_xor_hash > l->xor_hash)
-                        return 1;
+                r = CMP(f->current_xor_hash, l->xor_hash);
+                if (r != 0)
+                        return r;
         }
 
         return 0;
@@ -1889,7 +1888,9 @@ _public_ int sd_journal_open_container(sd_journal **ret, const char *machine, in
         assert_return(machine_name_is_valid(machine), -EINVAL);
 
         p = strjoina("/run/systemd/machines/", machine);
-        r = parse_env_file(NULL, p, NEWLINE, "ROOT", &root, "CLASS", &class, NULL);
+        r = parse_env_file(NULL, p,
+                           "ROOT", &root,
+                           "CLASS", &class);
         if (r == -ENOENT)
                 return -EHOSTDOWN;
         if (r < 0)

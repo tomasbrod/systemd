@@ -4,8 +4,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "libudev.h"
 #include "sd-bus.h"
+#include "sd-device.h"
 #include "sd-event.h"
 
 #include "cgroup-util.h"
@@ -23,6 +23,8 @@ typedef struct Unit Unit;
 
 typedef struct Manager Manager;
 
+/* An externally visible state. We don't actually maintain this as state variable, but derive it from various fields
+ * when requested */
 typedef enum ManagerState {
         MANAGER_INITIALIZING,
         MANAGER_STARTING,
@@ -34,7 +36,7 @@ typedef enum ManagerState {
         _MANAGER_STATE_INVALID = -1
 } ManagerState;
 
-typedef enum ManagerExitCode {
+typedef enum ManagerObjective {
         MANAGER_OK,
         MANAGER_EXIT,
         MANAGER_RELOAD,
@@ -44,9 +46,9 @@ typedef enum ManagerExitCode {
         MANAGER_HALT,
         MANAGER_KEXEC,
         MANAGER_SWITCH_ROOT,
-        _MANAGER_EXIT_CODE_MAX,
-        _MANAGER_EXIT_CODE_INVALID = -1
-} ManagerExitCode;
+        _MANAGER_OBJECTIVE_MAX,
+        _MANAGER_OBJECTIVE_INVALID = -1
+} ManagerObjective;
 
 typedef enum StatusType {
         STATUS_TYPE_EPHEMERAL,
@@ -106,14 +108,15 @@ typedef enum ManagerTimestamp {
 #include "show-status.h"
 #include "unit-name.h"
 
-enum {
-        /* 0 = run normally */
-        MANAGER_TEST_RUN_MINIMAL        = 1 << 1,  /* create basic data structures */
-        MANAGER_TEST_RUN_BASIC          = 1 << 2,  /* interact with the environment */
-        MANAGER_TEST_RUN_ENV_GENERATORS = 1 << 3,  /* also run env generators  */
-        MANAGER_TEST_RUN_GENERATORS     = 1 << 4,  /* also run unit generators */
+typedef enum ManagerTestRunFlags {
+        MANAGER_TEST_NORMAL             = 0,       /* run normally */
+        MANAGER_TEST_RUN_MINIMAL        = 1 << 0,  /* create basic data structures */
+        MANAGER_TEST_RUN_BASIC          = 1 << 1,  /* interact with the environment */
+        MANAGER_TEST_RUN_ENV_GENERATORS = 1 << 2,  /* also run env generators  */
+        MANAGER_TEST_RUN_GENERATORS     = 1 << 3,  /* also run unit generators */
         MANAGER_TEST_FULL = MANAGER_TEST_RUN_BASIC | MANAGER_TEST_RUN_ENV_GENERATORS | MANAGER_TEST_RUN_GENERATORS,
-};
+} ManagerTestRunFlags;
+
 assert_cc((MANAGER_TEST_FULL & UINT8_MAX) == MANAGER_TEST_FULL);
 
 struct Manager {
@@ -209,7 +212,8 @@ struct Manager {
         LookupPaths lookup_paths;
         Set *unit_path_cache;
 
-        char **environment;
+        char **transient_environment;  /* The environment, as determined from config files, kernel cmdline and environment generators */
+        char **client_environment;     /* Environment variables created by clients through the bus API */
 
         usec_t runtime_watchdog;
         usec_t shutdown_watchdog;
@@ -217,8 +221,7 @@ struct Manager {
         dual_timestamp timestamps[_MANAGER_TIMESTAMP_MAX];
 
         /* Data specific to the device subsystem */
-        struct udev_monitor* udev_monitor;
-        sd_event_source *udev_event_source;
+        sd_device_monitor *device_monitor;
         Hashmap *devices_by_sysfs;
 
         /* Data specific to the mount subsystem */
@@ -245,7 +248,7 @@ struct Manager {
 
         /* This is used during reloading: before the reload we queue
          * the reply message here, and afterwards we send it */
-        sd_bus_message *queued_message;
+        sd_bus_message *pending_reload_message;
 
         Hashmap *watch_bus;  /* D-Bus names => Unit object n:1 */
 
@@ -280,11 +283,10 @@ struct Manager {
         usec_t etc_localtime_mtime;
         bool etc_localtime_accessible:1;
 
-        /* Flags */
-        ManagerExitCode exit_code:5;
+        ManagerObjective objective:5;
 
+        /* Flags */
         bool dispatching_load_queue:1;
-        bool dispatching_dbus_queue:1;
 
         bool taint_usr:1;
 
@@ -297,7 +299,7 @@ struct Manager {
         /* Have we ever changed the "kernel.pid_max" sysctl? */
         bool sysctl_pid_max_changed:1;
 
-        unsigned test_run_flags:8;
+        ManagerTestRunFlags test_run_flags:8;
 
         /* If non-zero, exit with the following value when the systemd
          * process terminate. Useful for containers: systemd-nspawn could get
@@ -405,10 +407,12 @@ struct Manager {
 
 #define MANAGER_IS_FINISHED(m) (dual_timestamp_is_set((m)->timestamps + MANAGER_TIMESTAMP_FINISH))
 
-/* The exit code is set to OK as soon as we enter the main loop, and set otherwise as soon as we are done with it */
-#define MANAGER_IS_RUNNING(m) ((m)->exit_code == MANAGER_OK)
+/* The objective is set to OK as soon as we enter the main loop, and set otherwise as soon as we are done with it */
+#define MANAGER_IS_RUNNING(m) ((m)->objective == MANAGER_OK)
 
-int manager_new(UnitFileScope scope, unsigned test_run_flags, Manager **m);
+#define MANAGER_IS_TEST_RUN(m) ((m)->test_run_flags != 0)
+
+int manager_new(UnitFileScope scope, ManagerTestRunFlags test_run_flags, Manager **m);
 Manager* manager_free(Manager *m);
 DEFINE_TRIVIAL_CLEANUP_FUNC(Manager*, manager_free);
 
@@ -438,7 +442,10 @@ void manager_clear_jobs(Manager *m);
 
 unsigned manager_dispatch_load_queue(Manager *m);
 
-int manager_environment_add(Manager *m, char **minus, char **plus);
+int manager_transient_environment_add(Manager *m, char **plus);
+int manager_client_environment_modify(Manager *m, char **minus, char **plus);
+int manager_get_effective_environment(Manager *m, char ***ret);
+
 int manager_set_default_rlimits(Manager *m, struct rlimit **default_rlimit);
 
 int manager_loop(Manager *m);

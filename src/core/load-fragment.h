@@ -75,7 +75,6 @@ CONFIG_PARSER_PROTOTYPE(config_parse_io_limit);
 CONFIG_PARSER_PROTOTYPE(config_parse_blockio_weight);
 CONFIG_PARSER_PROTOTYPE(config_parse_blockio_device_weight);
 CONFIG_PARSER_PROTOTYPE(config_parse_blockio_bandwidth);
-CONFIG_PARSER_PROTOTYPE(config_parse_netclass);
 CONFIG_PARSER_PROTOTYPE(config_parse_job_mode);
 CONFIG_PARSER_PROTOTYPE(config_parse_job_mode_isolate);
 CONFIG_PARSER_PROTOTYPE(config_parse_exec_selinux_context);
@@ -104,6 +103,7 @@ CONFIG_PARSER_PROTOTYPE(config_parse_job_timeout_sec);
 CONFIG_PARSER_PROTOTYPE(config_parse_job_running_timeout_sec);
 CONFIG_PARSER_PROTOTYPE(config_parse_log_extra_fields);
 CONFIG_PARSER_PROTOTYPE(config_parse_collect_mode);
+CONFIG_PARSER_PROTOTYPE(config_parse_pid_file);
 
 /* gperf prototypes */
 const struct ConfigPerfItem* load_fragment_gperf_lookup(const char *key, GPERF_LEN_TYPE length);

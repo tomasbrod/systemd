@@ -114,32 +114,25 @@ int dnssec_canonicalize(const char *n, char *buffer, size_t buffer_max) {
 
 #if HAVE_GCRYPT
 
-static int rr_compare(const void *a, const void *b) {
-        DnsResourceRecord **x = (DnsResourceRecord**) a, **y = (DnsResourceRecord**) b;
+static int rr_compare(DnsResourceRecord * const *a, DnsResourceRecord * const *b) {
+        const DnsResourceRecord *x = *a, *y = *b;
         size_t m;
         int r;
 
         /* Let's order the RRs according to RFC 4034, Section 6.3 */
 
         assert(x);
-        assert(*x);
-        assert((*x)->wire_format);
+        assert(x->wire_format);
         assert(y);
-        assert(*y);
-        assert((*y)->wire_format);
+        assert(y->wire_format);
 
-        m = MIN(DNS_RESOURCE_RECORD_RDATA_SIZE(*x), DNS_RESOURCE_RECORD_RDATA_SIZE(*y));
+        m = MIN(DNS_RESOURCE_RECORD_RDATA_SIZE(x), DNS_RESOURCE_RECORD_RDATA_SIZE(y));
 
-        r = memcmp(DNS_RESOURCE_RECORD_RDATA(*x), DNS_RESOURCE_RECORD_RDATA(*y), m);
+        r = memcmp(DNS_RESOURCE_RECORD_RDATA(x), DNS_RESOURCE_RECORD_RDATA(y), m);
         if (r != 0)
                 return r;
 
-        if (DNS_RESOURCE_RECORD_RDATA_SIZE(*x) < DNS_RESOURCE_RECORD_RDATA_SIZE(*y))
-                return -1;
-        else if (DNS_RESOURCE_RECORD_RDATA_SIZE(*x) > DNS_RESOURCE_RECORD_RDATA_SIZE(*y))
-                return 1;
-
-        return 0;
+        return CMP(DNS_RESOURCE_RECORD_RDATA_SIZE(x), DNS_RESOURCE_RECORD_RDATA_SIZE(y));
 }
 
 static int dnssec_rsa_verify_raw(
@@ -806,7 +799,7 @@ int dnssec_verify_rrset(
                 return -ENODATA;
 
         /* Bring the RRs into canonical order */
-        qsort_safe(list, n, sizeof(DnsResourceRecord*), rr_compare);
+        typesafe_qsort(list, n, rr_compare);
 
         f = open_memstream(&sig_data, &sig_size);
         if (!f)
@@ -1385,17 +1378,13 @@ static int nsec3_is_good(DnsResourceRecord *rr, DnsResourceRecord *nsec3) {
 
         a = dns_resource_key_name(rr->key);
         r = dns_name_parent(&a); /* strip off hash */
-        if (r < 0)
+        if (r <= 0)
                 return r;
-        if (r == 0)
-                return 0;
 
         b = dns_resource_key_name(nsec3->key);
         r = dns_name_parent(&b); /* strip off hash */
-        if (r < 0)
+        if (r <= 0)
                 return r;
-        if (r == 0)
-                return 0;
 
         /* Make sure both have the same parent */
         return dns_name_equal(a, b);
@@ -2103,10 +2092,8 @@ static int dnssec_test_positive_wildcard_nsec3(
         for (;;) {
                 next_closer = name;
                 r = dns_name_parent(&name);
-                if (r < 0)
+                if (r <= 0)
                         return r;
-                if (r == 0)
-                        return 0;
 
                 r = dns_name_equal(name, source);
                 if (r < 0)

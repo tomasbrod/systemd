@@ -5,10 +5,10 @@
 #include "sd-bus.h"
 #include "sd-device.h"
 
-#include "device-enumerator-private.h"
 #include "bus-error.h"
 #include "bus-unit-util.h"
 #include "bus-util.h"
+#include "device-util.h"
 #include "dirent-util.h"
 #include "escape.h"
 #include "fd-util.h"
@@ -36,7 +36,7 @@ enum {
 } arg_action = ACTION_DEFAULT;
 
 static bool arg_no_block = false;
-static bool arg_no_pager = false;
+static PagerFlags arg_pager_flags = 0;
 static bool arg_ask_password = true;
 static bool arg_quiet = false;
 static BusTransport arg_transport = BUS_TRANSPORT_LOCAL;
@@ -177,7 +177,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_NO_PAGER:
-                        arg_no_pager = true;
+                        arg_pager_flags |= PAGER_DISABLE;
                         break;
 
                 case ARG_NO_ASK_PASSWORD:
@@ -944,10 +944,10 @@ static int umount_by_device(sd_bus *bus, const char *what) {
 
         r = sd_device_get_property_value(d, "ID_FS_USAGE", &v);
         if (r < 0)
-                return log_error_errno(r, "Failed to get device property: %m");
+                return log_device_error_errno(d, r, "Failed to get device property: %m");
 
         if (!streq(v, "filesystem")) {
-                log_error("%s does not contain a known file system.", what);
+                log_device_error(d, "%s does not contain a known file system.", what);
                 return -EINVAL;
         }
 
@@ -1285,7 +1285,7 @@ static int discover_loop_backing_file(void) {
                 return log_error_errno(r, "Failed to get device from device number: %m");
 
         if (sd_device_get_property_value(d, "ID_FS_USAGE", &v) < 0 || !streq(v, "filesystem")) {
-                log_error("%s does not contain a known file system.", arg_mount_what);
+                log_device_error(d, "%s does not contain a known file system.", arg_mount_what);
                 return -EINVAL;
         }
 
@@ -1372,17 +1372,15 @@ struct item {
         char* columns[_COLUMN_MAX];
 };
 
-static int compare_item(const void *a, const void *b) {
-        const struct item *x = a, *y = b;
-
-        if (x->columns[COLUMN_NODE] == y->columns[COLUMN_NODE])
+static int compare_item(const struct item *a, const struct item *b) {
+        if (a->columns[COLUMN_NODE] == b->columns[COLUMN_NODE])
                 return 0;
-        if (!x->columns[COLUMN_NODE])
+        if (!a->columns[COLUMN_NODE])
                 return 1;
-        if (!y->columns[COLUMN_NODE])
+        if (!b->columns[COLUMN_NODE])
                 return -1;
 
-        return path_compare(x->columns[COLUMN_NODE], y->columns[COLUMN_NODE]);
+        return path_compare(a->columns[COLUMN_NODE], b->columns[COLUMN_NODE]);
 }
 
 static int list_devices(void) {
@@ -1420,11 +1418,7 @@ static int list_devices(void) {
         if (r < 0)
                 return log_error_errno(r, "Failed to add property match: %m");
 
-        r = device_enumerator_scan_devices(e);
-        if (r < 0)
-                return log_error_errno(r, "Failed to enumerate devices: %m");
-
-        FOREACH_DEVICE_AND_SUBSYSTEM(e, d) {
+        FOREACH_DEVICE(e, d) {
                 struct item *j;
 
                 if (!GREEDY_REALLOC0(items, n_allocated, n+1)) {
@@ -1489,9 +1483,9 @@ static int list_devices(void) {
                 goto finish;
         }
 
-        qsort_safe(items, n, sizeof(struct item), compare_item);
+        typesafe_qsort(items, n, compare_item);
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         fputs(ansi_underline(), stdout);
         for (c = 0; c < _COLUMN_MAX; c++) {

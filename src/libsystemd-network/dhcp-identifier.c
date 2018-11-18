@@ -108,8 +108,13 @@ int dhcp_identifier_set_duid_en(struct duid *duid, size_t *len) {
         assert(len);
 
         r = sd_id128_get_machine(&machine_id);
-        if (r < 0)
+        if (r < 0) {
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+                machine_id = SD_ID128_MAKE(01, 02, 03, 04, 05, 06, 07, 08, 09, 0a, 0b, 0c, 0d, 0e, 0f, 10);
+#else
                 return r;
+#endif
+        }
 
         unaligned_write_be16(&duid->type, DUID_TYPE_EN);
         unaligned_write_be32(&duid->en.pen, SYSTEMD_PEN);
@@ -143,24 +148,30 @@ int dhcp_identifier_set_duid_uuid(struct duid *duid, size_t *len) {
         return 0;
 }
 
-int dhcp_identifier_set_iaid(int ifindex, uint8_t *mac, size_t mac_len, void *_id) {
+int dhcp_identifier_set_iaid(
+                int ifindex,
+                const uint8_t *mac,
+                size_t mac_len,
+                bool legacy_unstable_byteorder,
+                void *_id) {
         /* name is a pointer to memory in the sd_device struct, so must
          * have the same scope */
         _cleanup_(sd_device_unrefp) sd_device *device = NULL;
         const char *name = NULL;
         uint64_t id;
+        uint32_t id32;
 
         if (detect_container() <= 0) {
                 /* not in a container, udev will be around */
                 char ifindex_str[2 + DECIMAL_STR_MAX(int)];
-                int initialized, r;
+                int r;
 
                 sprintf(ifindex_str, "n%d", ifindex);
                 if (sd_device_new_from_device_id(&device, ifindex_str) >= 0) {
-                        r = sd_device_get_is_initialized(device, &initialized);
+                        r = sd_device_get_is_initialized(device);
                         if (r < 0)
                                 return r;
-                        if (!initialized)
+                        if (r == 0)
                                 /* not yet ready */
                                 return -EBUSY;
 
@@ -174,10 +185,18 @@ int dhcp_identifier_set_iaid(int ifindex, uint8_t *mac, size_t mac_len, void *_i
                 /* fall back to MAC address if no predictable name available */
                 id = siphash24(mac, mac_len, HASH_KEY.bytes);
 
-        id = htole64(id);
+        id32 = (id & 0xffffffff) ^ (id >> 32);
 
-        /* fold into 32 bits */
-        unaligned_write_be32(_id, (id & 0xffffffff) ^ (id >> 32));
+        if (legacy_unstable_byteorder)
+                /* for historical reasons (a bug), the bits were swapped and thus
+                 * the result was endianness dependant. Preserve that behavior. */
+                id32 = __bswap_32(id32);
+        else
+                /* the fixed behavior returns a stable byte order. Since LE is expected
+                 * to be more common, swap the bytes on LE to give the same as legacy
+                 * behavior. */
+                id32 = be32toh(id32);
 
+        unaligned_write_ne32(_id, id32);
         return 0;
 }

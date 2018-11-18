@@ -4,11 +4,11 @@
 #include <arpa/inet.h>
 
 #include "sd-bus.h"
+#include "sd-device.h"
 #include "sd-event.h"
 #include "sd-id128.h"
 #include "sd-netlink.h"
 #include "sd-resolve.h"
-#include "libudev.h"
 
 #include "dhcp-identifier.h"
 #include "hashmap.h"
@@ -27,8 +27,7 @@ struct Manager {
         sd_event *event;
         sd_resolve *resolve;
         sd_bus *bus;
-        struct udev_monitor *udev_monitor;
-        sd_event_source *udev_event_source;
+        sd_device_monitor *device_monitor;
 
         bool enumerating:1;
         bool dirty:1;
@@ -94,7 +93,6 @@ int manager_request_product_uuid(Manager *m, Link *link);
 
 Link *manager_dhcp6_prefix_get(Manager *m, struct in6_addr *addr);
 int manager_dhcp6_prefix_add(Manager *m, struct in6_addr *addr, Link *link);
-int manager_dhcp6_prefix_remove(Manager *m, struct in6_addr *addr);
 int manager_dhcp6_prefix_remove_all(Manager *m, Link *link);
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(Manager*, manager_free);

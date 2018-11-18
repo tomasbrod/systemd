@@ -12,6 +12,7 @@
 #include "macro.h"
 #include "alloc-util.h"
 #include "dns-domain.h"
+#include "event-util.h"
 #include "fd-util.h"
 #include "icmp6-util.h"
 #include "in-addr-util.h"
@@ -27,14 +28,14 @@ _public_ int sd_radv_new(sd_radv **ret) {
 
         assert_return(ret, -EINVAL);
 
-        ra = new0(sd_radv, 1);
+        ra = new(sd_radv, 1);
         if (!ra)
                 return -ENOMEM;
 
-        ra->n_ref = 1;
-        ra->fd = -1;
-
-        LIST_HEAD_INIT(ra->prefixes);
+        *ra = (sd_radv) {
+                .n_ref = 1,
+                .fd = -1,
+        };
 
         *ret = TAKE_PTR(ra);
 
@@ -77,8 +78,7 @@ _public_ sd_event *sd_radv_get_event(sd_radv *ra) {
 static void radv_reset(sd_radv *ra) {
         assert(ra);
 
-        ra->timeout_event_source =
-                sd_event_source_unref(ra->timeout_event_source);
+        (void) event_source_disable(ra->timeout_event_source);
 
         ra->recv_event_source =
                 sd_event_source_unref(ra->recv_event_source);
@@ -98,6 +98,8 @@ static sd_radv *radv_free(sd_radv *ra) {
 
         free(ra->rdnss);
         free(ra->dnssl);
+
+        ra->timeout_event_source = sd_event_source_unref(ra->timeout_event_source);
 
         radv_reset(ra);
 
@@ -249,8 +251,11 @@ static int radv_recv(sd_event_source *s, int fd, uint32_t revents, void *userdat
                         log_radv("Received invalid source address from ICMPv6 socket. Ignoring.");
                         break;
 
+                case -EAGAIN: /* ignore spurious wakeups */
+                        break;
+
                 default:
-                        log_radv_warning_errno(r, "Error receiving from ICMPv6 socket: %m");
+                        log_radv_errno(r, "Unexpected error receiving from ICMPv6 socket: %m");
                         break;
                 }
 
@@ -261,7 +266,7 @@ static int radv_recv(sd_event_source *s, int fd, uint32_t revents, void *userdat
 
         r = radv_send(ra, &src, ra->lifetime);
         if (r < 0)
-                log_radv_warning_errno(r, "Unable to send solicited Router Advertisement to %s: %m", addr);
+                log_radv_errno(r, "Unable to send solicited Router Advertisement to %s: %m", addr);
         else
                 log_radv("Sent solicited Router Advertisement to %s", addr);
 
@@ -286,15 +291,13 @@ static int radv_timeout(sd_event_source *s, uint64_t usec, void *userdata) {
         assert(ra);
         assert(ra->event);
 
-        ra->timeout_event_source = sd_event_source_unref(ra->timeout_event_source);
-
         r = sd_event_now(ra->event, clock_boottime_or_monotonic(), &time_now);
         if (r < 0)
                 goto fail;
 
         r = radv_send(ra, NULL, ra->lifetime);
         if (r < 0)
-                log_radv_warning_errno(r, "Unable to send Router Advertisement: %m");
+                log_radv_errno(r, "Unable to send Router Advertisement: %m");
 
         /* RFC 4861, Section 6.2.4, sending initial Router Advertisements */
         if (ra->ra_sent < SD_RADV_MAX_INITIAL_RTR_ADVERTISEMENTS) {
@@ -308,28 +311,20 @@ static int radv_timeout(sd_event_source *s, uint64_t usec, void *userdata) {
                  format_timespan(time_string, FORMAT_TIMESPAN_MAX,
                                  timeout, USEC_PER_SEC));
 
-        r = sd_event_add_time(ra->event, &ra->timeout_event_source,
-                              clock_boottime_or_monotonic(),
-                              time_now + timeout, MSEC_PER_SEC,
-                              radv_timeout, ra);
-        if (r < 0)
-                goto fail;
-
-        r = sd_event_source_set_priority(ra->timeout_event_source,
-                                         ra->event_priority);
-        if (r < 0)
-                goto fail;
-
-        r = sd_event_source_set_description(ra->timeout_event_source,
-                                            "radv-timeout");
+        r = event_reset_time(ra->event, &ra->timeout_event_source,
+                             clock_boottime_or_monotonic(),
+                             time_now + timeout, MSEC_PER_SEC,
+                             radv_timeout, ra,
+                             ra->event_priority, "radv-timeout", true);
         if (r < 0)
                 goto fail;
 
         ra->ra_sent++;
 
+        return 0;
+
 fail:
-        if (r < 0)
-                sd_radv_stop(ra);
+        sd_radv_stop(ra);
 
         return 0;
 }
@@ -348,7 +343,7 @@ _public_ int sd_radv_stop(sd_radv *ra) {
            with zero lifetime  */
         r = radv_send(ra, NULL, 0);
         if (r < 0)
-                log_radv_warning_errno(r, "Unable to send last Router Advertisement with router lifetime set to zero: %m");
+                log_radv_errno(r, "Unable to send last Router Advertisement with router lifetime set to zero: %m");
 
         radv_reset(ra);
         ra->fd = safe_close(ra->fd);
@@ -367,19 +362,13 @@ _public_ int sd_radv_start(sd_radv *ra) {
         if (ra->state != SD_RADV_STATE_IDLE)
                 return 0;
 
-        r = sd_event_add_time(ra->event, &ra->timeout_event_source,
-                              clock_boottime_or_monotonic(), 0, 0,
-                              radv_timeout, ra);
+        r = event_reset_time(ra->event, &ra->timeout_event_source,
+                             clock_boottime_or_monotonic(),
+                             0, 0,
+                             radv_timeout, ra,
+                             ra->event_priority, "radv-timeout", true);
         if (r < 0)
                 goto fail;
-
-        r = sd_event_source_set_priority(ra->timeout_event_source,
-                                         ra->event_priority);
-        if (r < 0)
-                goto fail;
-
-        (void) sd_event_source_set_description(ra->timeout_event_source,
-                                               "radv-timeout");
 
         r = icmp6_bind_router_advertisement(ra->ifindex);
         if (r < 0)

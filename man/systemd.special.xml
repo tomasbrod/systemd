@@ -29,6 +29,7 @@
     <filename>cryptsetup-pre.target</filename>,
     <filename>cryptsetup.target</filename>,
     <filename>ctrl-alt-del.target</filename>,
+    <filename>boot-complete.target</filename>,
     <filename>default.target</filename>,
     <filename>emergency.target</filename>,
     <filename>exit.target</filename>,
@@ -144,7 +145,28 @@
             <citerefentry><refentrytitle>bootup</refentrytitle><manvolnum>7</manvolnum></citerefentry>
             for details on the targets involved.
             </para>
+          </listitem>
+        </varlistentry>
+        <varlistentry>
+          <term><filename>boot-complete.target</filename></term>
+          <listitem>
+            <para>This target is intended as generic synchronization point for services that shall determine or act on
+            whether the boot process completed successfully. Order units that are required to succeed for a boot process
+            to be considered successful before this unit, and add a <varname>Requires=</varname> dependency from the
+            target unit to them. Order units that shall only run when the boot process is considered successful after the
+            target unit and pull in the target from it, also with <varname>Requires=</varname>. Note that by default this
+            target unit is not part of the initial boot transaction, but is supposed to be pulled in only if required by
+            units that want to run only on successful boots.</para>
 
+            <para>See
+            <citerefentry><refentrytitle>systemd-boot-check-no-failures.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+            for a service that implements a generic system health check and orders itself before
+            <filename>boot-complete.target</filename>.</para>
+
+            <para>See
+            <citerefentry><refentrytitle>systemd-bless-boot.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+            for a service that propagates boot success information to the boot loader, and orders itself after
+            <filename>boot-complete.target</filename>.</para>
           </listitem>
         </varlistentry>
         <varlistentry>
@@ -596,14 +618,18 @@
           <listitem>
             <para>A special target unit that sets up all slice units (see
             <citerefentry><refentrytitle>systemd.slice</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-            for details) that shall be active after boot. By default the generic
-            <filename>system.slice</filename> slice unit, as well as the root slice unit
-            <filename>-.slice</filename>, is pulled in and ordered before this unit (see
+            for details) that shall always be active after boot. By default the generic
+            <filename>system.slice</filename> slice unit as well as the root slice unit
+            <filename>-.slice</filename> are pulled in and ordered before this unit (see
             below).</para>
 
-            <para>It's a good idea to add <varname>WantedBy=slices.target</varname> lines to the
-            <literal>[Install]</literal> section of all slices units that may be installed
-            dynamically.</para>
+            <para>Adding slice units to <filename>slices.target</filename> is generally not
+            necessary. Instead, when some unit that uses <varname>Slice=</varname> is started, the
+            specified slice will be started automatically. Adding
+            <varname>WantedBy=slices.target</varname> lines to the <literal>[Install]</literal>
+            section should only be done for units that need to be always active. In that case care
+            needs to be taken to avoid creating a loop through the automatic dependencies on
+            "parent" slices.</para>
           </listitem>
         </varlistentry>
         <varlistentry>

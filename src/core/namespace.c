@@ -265,7 +265,6 @@ static int append_empty_dir_mounts(MountEntry **p, char **strv) {
                         .path_const = *i,
                         .mode = EMPTY_DIR,
                         .ignore = false,
-                        .has_prefix = false,
                         .read_only = true,
                         .options_const = "mode=755",
                         .flags = MS_NOSUID|MS_NOEXEC|MS_NODEV|MS_STRICTATIME,
@@ -304,7 +303,7 @@ static int append_tmpfs_mounts(MountEntry **p, const TemporaryFileSystem *tmpfs,
         for (i = 0; i < n; i++) {
                 const TemporaryFileSystem *t = tmpfs + i;
                 _cleanup_free_ char *o = NULL, *str = NULL;
-                unsigned long flags = MS_NODEV|MS_STRICTATIME;
+                unsigned long flags;
                 bool ro = false;
 
                 if (!path_is_absolute(t->path)) {
@@ -312,29 +311,25 @@ static int append_tmpfs_mounts(MountEntry **p, const TemporaryFileSystem *tmpfs,
                         return -EINVAL;
                 }
 
-                if (!isempty(t->options)) {
-                        str = strjoin("mode=0755,", t->options);
-                        if (!str)
-                                return -ENOMEM;
+                str = strjoin("mode=0755,", t->options);
+                if (!str)
+                        return -ENOMEM;
 
-                        r = mount_option_mangle(str, MS_NODEV|MS_STRICTATIME, &flags, &o);
-                        if (r < 0)
-                                return log_debug_errno(r, "Failed to parse mount option '%s': %m", str);
+                r = mount_option_mangle(str, MS_NODEV|MS_STRICTATIME, &flags, &o);
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to parse mount option '%s': %m", str);
 
-                        ro = flags & MS_RDONLY;
-                        if (ro)
-                                flags ^= MS_RDONLY;
-                }
+                ro = flags & MS_RDONLY;
+                if (ro)
+                        flags ^= MS_RDONLY;
 
                 *((*p)++) = (MountEntry) {
                         .path_const = t->path,
                         .mode = TMPFS,
                         .read_only = ro,
-                        .options_malloc = o,
+                        .options_malloc = TAKE_PTR(o),
                         .flags = flags,
                 };
-
-                o = NULL;
         }
 
         return 0;
@@ -402,32 +397,22 @@ static int append_protect_system(MountEntry **p, ProtectSystem protect_system, b
         }
 }
 
-static int mount_path_compare(const void *a, const void *b) {
-        const MountEntry *p = a, *q = b;
+static int mount_path_compare(const MountEntry *a, const MountEntry *b) {
         int d;
 
         /* If the paths are not equal, then order prefixes first */
-        d = path_compare(mount_entry_path(p), mount_entry_path(q));
+        d = path_compare(mount_entry_path(a), mount_entry_path(b));
         if (d != 0)
                 return d;
 
         /* If the paths are equal, check the mode */
-        if (p->mode < q->mode)
-                return -1;
-        if (p->mode > q->mode)
-                return 1;
-
-        return 0;
+        return CMP((int) a->mode, (int) b->mode);
 }
 
 static int prefix_where_needed(MountEntry *m, size_t n, const char *root_directory) {
         size_t i;
 
-        /* Prefixes all paths in the bind mount table with the root directory if it is specified and the entry needs
-         * that. */
-
-        if (!root_directory)
-                return 0;
+        /* Prefixes all paths in the bind mount table with the root directory if the entry needs that. */
 
         for (i = 0; i < n; i++) {
                 char *s;
@@ -641,7 +626,7 @@ add_symlink:
         t = strjoina("../", bn);
 
         if (symlink(t, sl) < 0)
-                log_debug_errno(errno, "Failed to symlink '%s' to '%s': %m", t, sl);
+                log_debug_errno(errno, "Failed to symlink '%s' to '%s', ignoring: %m", t, sl);
 
         return 0;
 }
@@ -666,35 +651,34 @@ static int mount_private_dev(MountEntry *m) {
         u = umask(0000);
 
         if (!mkdtemp(temporary_mount))
-                return -errno;
+                return log_debug_errno(errno, "Failed to create temporary directory '%s': %m", temporary_mount);
 
         dev = strjoina(temporary_mount, "/dev");
         (void) mkdir(dev, 0755);
         if (mount("tmpfs", dev, "tmpfs", DEV_MOUNT_OPTIONS, "mode=755") < 0) {
-                r = -errno;
+                r = log_debug_errno(errno, "Failed to mount tmpfs on '%s': %m", dev);
                 goto fail;
         }
 
         devpts = strjoina(temporary_mount, "/dev/pts");
         (void) mkdir(devpts, 0755);
         if (mount("/dev/pts", devpts, NULL, MS_BIND, NULL) < 0) {
-                r = -errno;
+                r = log_debug_errno(errno, "Failed to bind mount /dev/pts on '%s': %m", devpts);
                 goto fail;
         }
 
-        /* /dev/ptmx can either be a device node or a symlink to /dev/pts/ptmx
-         * when /dev/ptmx a device node, /dev/pts/ptmx has 000 permissions making it inaccessible
-         * thus, in that case make a clone
-         *
-         * in nspawn and other containers it will be a symlink, in that case make it a symlink
-         */
+        /* /dev/ptmx can either be a device node or a symlink to /dev/pts/ptmx.
+         * When /dev/ptmx a device node, /dev/pts/ptmx has 000 permissions making it inaccessible.
+         * Thus, in that case make a clone.
+         * In nspawn and other containers it will be a symlink, in that case make it a symlink. */
         r = is_symlink("/dev/ptmx");
-        if (r < 0)
+        if (r < 0) {
+                log_debug_errno(r, "Failed to detect whether /dev/ptmx is a symlink or not: %m");
                 goto fail;
-        if (r > 0) {
+        } else if (r > 0) {
                 devptmx = strjoina(temporary_mount, "/dev/ptmx");
                 if (symlink("pts/ptmx", devptmx) < 0) {
-                        r = -errno;
+                        r = log_debug_errno(errno, "Failed to create a symlink '%s' to pts/ptmx: %m", devptmx);
                         goto fail;
                 }
         } else {
@@ -707,20 +691,23 @@ static int mount_private_dev(MountEntry *m) {
         (void) mkdir(devshm, 0755);
         r = mount("/dev/shm", devshm, NULL, MS_BIND, NULL);
         if (r < 0) {
-                r = -errno;
+                r = log_debug_errno(errno, "Failed to bind mount /dev/shm on '%s': %m", devshm);
                 goto fail;
         }
 
         devmqueue = strjoina(temporary_mount, "/dev/mqueue");
         (void) mkdir(devmqueue, 0755);
-        (void) mount("/dev/mqueue", devmqueue, NULL, MS_BIND, NULL);
+        if (mount("/dev/mqueue", devmqueue, NULL, MS_BIND, NULL) < 0)
+                log_debug_errno(errno, "Failed to bind mount /dev/mqueue on '%s', ignoring: %m", devmqueue);
 
         devhugepages = strjoina(temporary_mount, "/dev/hugepages");
         (void) mkdir(devhugepages, 0755);
-        (void) mount("/dev/hugepages", devhugepages, NULL, MS_BIND, NULL);
+        if (mount("/dev/hugepages", devhugepages, NULL, MS_BIND, NULL) < 0)
+                log_debug_errno(errno, "Failed to bind mount /dev/hugepages on '%s', ignoring: %m", devhugepages);
 
         devlog = strjoina(temporary_mount, "/dev/log");
-        (void) symlink("/run/systemd/journal/dev-log", devlog);
+        if (symlink("/run/systemd/journal/dev-log", devlog) < 0)
+                log_debug_errno(errno, "Failed to create a symlink '%s' to /run/systemd/journal/dev-log, ignoring: %m", devlog);
 
         NULSTR_FOREACH(d, devnodes) {
                 r = clone_device_node(d, temporary_mount, &can_mknod);
@@ -729,7 +716,9 @@ static int mount_private_dev(MountEntry *m) {
                         goto fail;
         }
 
-        dev_setup(temporary_mount, UID_INVALID, GID_INVALID);
+        r = dev_setup(temporary_mount, UID_INVALID, GID_INVALID);
+        if (r < 0)
+                log_debug_errno(r, "Failed to setup basic device tree at '%s', ignoring: %m", temporary_mount);
 
         /* Create the /dev directory if missing. It is more likely to be
          * missing when the service is started with RootDirectory. This is
@@ -738,9 +727,12 @@ static int mount_private_dev(MountEntry *m) {
         (void) mkdir_p_label(mount_entry_path(m), 0755);
 
         /* Unmount everything in old /dev */
-        umount_recursive(mount_entry_path(m), 0);
+        r = umount_recursive(mount_entry_path(m), 0);
+        if (r < 0)
+                log_debug_errno(r, "Failed to unmount directories below '%s', ignoring: %m", mount_entry_path(m));
+
         if (mount(dev, mount_entry_path(m), NULL, MS_MOVE, NULL) < 0) {
-                r = -errno;
+                r = log_debug_errno(errno, "Failed to move mount point '%s' to '%s': %m", dev, mount_entry_path(m));
                 goto fail;
         }
 
@@ -1026,6 +1018,15 @@ static int apply_mount(
         return 0;
 }
 
+/* Change the per-mount readonly flag on an existing mount */
+static int remount_bind_readonly(const char *path, unsigned long orig_flags) {
+        int r;
+
+        r = mount(NULL, path, NULL, MS_REMOUNT | MS_BIND | MS_RDONLY | orig_flags, NULL);
+
+        return r < 0 ? -errno : 0;
+}
+
 static int make_read_only(const MountEntry *m, char **blacklist, FILE *proc_self_mountinfo) {
         bool submounts = false;
         int r = 0;
@@ -1035,17 +1036,15 @@ static int make_read_only(const MountEntry *m, char **blacklist, FILE *proc_self
 
         if (mount_entry_read_only(m)) {
                 if (IN_SET(m->mode, EMPTY_DIR, TMPFS)) {
-                        /* Make superblock readonly */
-                        if (mount(NULL, mount_entry_path(m), NULL, MS_REMOUNT | MS_RDONLY | m->flags, mount_entry_options(m)) < 0)
-                                r = -errno;
+                        r = remount_bind_readonly(mount_entry_path(m), m->flags);
                 } else {
                         submounts = true;
                         r = bind_remount_recursive_with_mountinfo(mount_entry_path(m), true, blacklist, proc_self_mountinfo);
                 }
         } else if (m->mode == PRIVATE_DEV) {
-                /* Superblock can be readonly but the submounts can't */
-                if (mount(NULL, mount_entry_path(m), NULL, MS_REMOUNT|DEV_MOUNT_OPTIONS|MS_RDONLY, NULL) < 0)
-                        r = -errno;
+                /* Set /dev readonly, but not submounts like /dev/shm. Also, we only set the per-mount read-only flag.
+                 * We can't set it on the superblock, if we are inside a user namespace and running Linux <= 4.17. */
+                r = remount_bind_readonly(mount_entry_path(m), DEV_MOUNT_OPTIONS);
         } else
                 return 0;
 
@@ -1127,7 +1126,7 @@ static void normalize_mounts(const char *root_directory, MountEntry *mounts, siz
         assert(n_mounts);
         assert(mounts || *n_mounts == 0);
 
-        qsort_safe(mounts, *n_mounts, sizeof(MountEntry), mount_path_compare);
+        typesafe_qsort(mounts, *n_mounts, mount_path_compare);
 
         drop_duplicates(mounts, n_mounts);
         drop_outside_root(root_directory, mounts, n_mounts);

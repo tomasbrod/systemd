@@ -105,7 +105,7 @@ const sd_bus_vtable bus_service_vtable[] = {
         SD_BUS_PROPERTY("RuntimeMaxUSec", "t", bus_property_get_usec, offsetof(Service, runtime_max_usec), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("WatchdogUSec", "t", bus_property_get_usec, offsetof(Service, watchdog_usec), SD_BUS_VTABLE_PROPERTY_CONST),
         BUS_PROPERTY_DUAL_TIMESTAMP("WatchdogTimestamp", offsetof(Service, watchdog_timestamp), 0),
-        SD_BUS_PROPERTY("PermissionsStartOnly", "b", bus_property_get_bool, offsetof(Service, permissions_start_only), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("PermissionsStartOnly", "b", bus_property_get_bool, offsetof(Service, permissions_start_only), SD_BUS_VTABLE_PROPERTY_CONST|SD_BUS_VTABLE_HIDDEN), /* 😷 deprecated */
         SD_BUS_PROPERTY("RootDirectoryStartOnly", "b", bus_property_get_bool, offsetof(Service, root_directory_start_only), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("RemainAfterExit", "b", bus_property_get_bool, offsetof(Service, remain_after_exit), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("GuessMainPID", "b", bus_property_get_bool, offsetof(Service, guess_main_pid), SD_BUS_VTABLE_PROPERTY_CONST),
@@ -312,8 +312,40 @@ static int bus_service_set_transient_property(
         if (streq(name, "NotifyAccess"))
                 return bus_set_transient_notify_access(u, name, &s->notify_access, message, flags, error);
 
-        if (streq(name, "PIDFile"))
-                return bus_set_transient_path(u, name, &s->pid_file, message, flags, error);
+        if (streq(name, "PIDFile")) {
+                _cleanup_free_ char *n = NULL;
+                const char *v, *e;
+
+                r = sd_bus_message_read(message, "s", &v);
+                if (r < 0)
+                        return r;
+
+                n = path_make_absolute(v, u->manager->prefix[EXEC_DIRECTORY_RUNTIME]);
+                if (!n)
+                        return -ENOMEM;
+
+                path_simplify(n, true);
+
+                if (!path_is_normalized(n))
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "PIDFile= path '%s' is not valid", n);
+
+                e = path_startswith(n, "/var/run/");
+                if (e) {
+                        char *z;
+
+                        z = strjoin("/run/", e);
+                        if (!z)
+                                return log_oom();
+
+                        if (!UNIT_WRITE_FLAGS_NOOP(flags))
+                                log_unit_notice(u, "Transient unit's PIDFile= property references path below legacy directory /var/run, updating %s → %s; please update client accordingly.", n, z);
+
+                        free_and_replace(s->pid_file, z);
+                } else
+                        free_and_replace(s->pid_file, n);
+
+                return 1;
+        }
 
         if (streq(name, "USBFunctionDescriptors"))
                 return bus_set_transient_path(u, name, &s->usb_function_descriptors, message, flags, error);

@@ -73,11 +73,11 @@ typedef struct TableData {
 } TableData;
 
 static size_t TABLE_CELL_TO_INDEX(TableCell *cell) {
-        unsigned i;
+        size_t i;
 
         assert(cell);
 
-        i = PTR_TO_UINT(cell);
+        i = PTR_TO_SIZE(cell);
         assert(i > 0);
 
         return i-1;
@@ -85,7 +85,7 @@ static size_t TABLE_CELL_TO_INDEX(TableCell *cell) {
 
 static TableCell* TABLE_INDEX_TO_CELL(size_t index) {
         assert(index != (size_t) -1);
-        return UINT_TO_PTR((unsigned) (index + 1));
+        return SIZE_TO_PTR(index + 1);
 }
 
 struct Table {
@@ -688,32 +688,16 @@ static int cell_data_compare(TableData *a, size_t index_a, TableData *b, size_t 
                         return 0;
 
                 case TABLE_TIMESTAMP:
-                        if (a->timestamp < b->timestamp)
-                                return -1;
-                        if (a->timestamp > b->timestamp)
-                                return 1;
-                        return 0;
+                        return CMP(a->timestamp, b->timestamp);
 
                 case TABLE_TIMESPAN:
-                        if (a->timespan < b->timespan)
-                                return -1;
-                        if (a->timespan > b->timespan)
-                                return 1;
-                        return 0;
+                        return CMP(a->timespan, b->timespan);
 
                 case TABLE_SIZE:
-                        if (a->size < b->size)
-                                return -1;
-                        if (a->size > b->size)
-                                return 1;
-                        return 0;
+                        return CMP(a->size, b->size);
 
                 case TABLE_UINT32:
-                        if (a->uint32 < b->uint32)
-                                return -1;
-                        if (a->uint32 > b->uint32)
-                                return 1;
-                        return 0;
+                        return CMP(a->uint32, b->uint32);
 
                 default:
                         ;
@@ -721,17 +705,10 @@ static int cell_data_compare(TableData *a, size_t index_a, TableData *b, size_t 
         }
 
         /* Generic fallback using the orginal order in which the cells where added. */
-        if (index_a < index_b)
-                return -1;
-        if (index_a > index_b)
-                return 1;
-
-        return 0;
+        return CMP(index_a, index_b);
 }
 
-static int table_data_compare(const void *x, const void *y, void *userdata) {
-        const size_t *a = x, *b = y;
-        Table *t = userdata;
+static int table_data_compare(const size_t *a, const size_t *b, Table *t) {
         size_t i;
         int r;
 
@@ -759,12 +736,7 @@ static int table_data_compare(const void *x, const void *y, void *userdata) {
         }
 
         /* Order identical lines by the order there were originally added in */
-        if (*a < *b)
-                return -1;
-        if (*a > *b)
-                return 1;
-
-        return 0;
+        return CMP(*a, *b);
 }
 
 static const char *table_data_format(TableData *d) {
@@ -944,7 +916,7 @@ int table_print(Table *t, FILE *f) {
                 for (i = 0; i < n_rows; i++)
                         sorted[i] = i * t->n_columns;
 
-                qsort_r_safe(sorted, n_rows, sizeof(size_t), table_data_compare, t);
+                typesafe_qsort_r(sorted, n_rows, table_data_compare, t);
         }
 
         if (t->display_map)

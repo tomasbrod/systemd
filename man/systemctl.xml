@@ -330,8 +330,8 @@
         <listitem>
           <para>Just print what would be done. Currently supported by verbs
           <command>halt</command>, <command>poweroff</command>, <command>reboot</command>,
-          <command>kexec</command>, <command>suspend</command>,
-          <command>hibernate</command>, <command>hybrid-sleep</command>,
+          <command>kexec</command>, <command>suspend</command>, <command>hibernate</command>,
+          <command>hybrid-sleep</command>, <command>suspend-then-hibernate</command>,
           <command>default</command>, <command>rescue</command>,
           <command>emergency</command>, and <command>exit</command>.</para>
         </listitem>
@@ -590,9 +590,8 @@
         <term><option>--lines=</option></term>
 
         <listitem>
-          <para>When used with <command>status</command>, controls the
-          number of journal lines to show, counting from the most
-          recent ones. Takes a positive integer argument. Defaults to
+          <para>When used with <command>status</command>, controls the number of journal lines to show, counting from
+          the most recent ones. Takes a positive integer argument, or 0 to disable journal output. Defaults to
           10.</para>
         </listitem>
       </varlistentry>
@@ -801,7 +800,7 @@ Sun 2017-02-26 20:57:49 EST  2h 3min left  Sun 2017-02-26 11:56:36 EST  6h ago  
 
             <para>Note that restarting a unit with this command does not necessarily flush out all of the unit's
             resources before it is started again. For example, the per-service file descriptor storage facility (see
-            <varname>FileDescriptoreStoreMax=</varname> in
+            <varname>FileDescriptorStoreMax=</varname> in
             <citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry>) will
             remain intact as long as the unit has a job pending, and is only cleared when the unit is fully stopped and
             no jobs are pending anymore. If it is intended that the file descriptor store is flushed out, too, during a
@@ -1059,6 +1058,12 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             terminating abnormally or timing out), it will automatically enter the <literal>failed</literal> state and
             its exit code and status is recorded for introspection by the administrator until the service is
             stopped/re-started or reset with this command.</para>
+
+            <para>In addition to resetting the <literal>failed</literal> state of a unit it also resets various other
+            per-unit properties: the start rate limit counter of all unit types is reset to zero, as is the restart
+            counter of service units. Thus, if a unit's start limit (as configured with
+            <varname>StartLimitIntervalSec=</varname>/<varname>StartLimitBurst=</varname>) is hit and the unit refuses
+            to be started again, use this command to make it startable again.</para>
           </listitem>
         </varlistentry>
 
@@ -1086,6 +1091,10 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             <option>--after</option>, <option>--before</option>
             may be used to change what types of dependencies
             are shown.</para>
+
+            <para>Note that this command only lists units currently loaded into memory by the service manager. In
+            particular, this command is not suitable to get a comprehensive list at all reverse dependencies on a
+            specific unit, as it won't list the dependencies declared by units currently not loaded.</para>
           </listitem>
         </varlistentry>
       </variablelist>
@@ -1884,6 +1893,17 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
             sleep operation is successfully enqueued. It will not wait for the sleep/wake-up cycle to complete.</para>
           </listitem>
         </varlistentry>
+
+        <varlistentry>
+          <term><command>suspend-then-hibernate</command></term>
+
+          <listitem>
+            <para>Suspend the system and hibernate it after the delay specified in <filename>systemd-sleep.conf</filename>.
+            This will trigger activation of the special target unit <filename>suspend-then-hibernate.target</filename>.
+            This command is asynchronous, and will return after the hybrid sleep operation is successfully enqueued.
+            It will not wait for the sleep/wake-up or hibernate/thaw cycle to complete.</para>
+          </listitem>
+        </varlistentry>
       </variablelist>
     </refsect2>
 
@@ -1940,8 +1960,56 @@ Jan 12 10:46:45 example.com bluetoothd[8900]: gatt-time-server: Input/output err
   <refsect1>
     <title>Exit status</title>
 
-    <para>On success, 0 is returned, a non-zero failure
-    code otherwise.</para>
+    <para>On success, 0 is returned, a non-zero failure code otherwise.</para>
+
+    <para><command>systemctl</command> uses the return codes defined by LSB, as defined in
+    <ulink url="http://refspecs.linuxbase.org/LSB_3.0.0/LSB-PDA/LSB-PDA/iniscrptact.html">LSB 3.0.0</ulink>.
+    </para>
+
+    <table>
+      <title>LSB return codes</title>
+
+      <tgroup cols='3'>
+        <thead>
+          <row>
+            <entry>Value</entry>
+            <entry>Description in LSB</entry>
+            <entry>Use in systemd</entry>
+          </row>
+        </thead>
+        <tbody>
+          <row>
+            <entry><constant>0</constant></entry>
+            <entry>"program is running or service is OK"</entry>
+            <entry>unit is active</entry>
+          </row>
+          <row>
+            <entry><constant>1</constant></entry>
+            <entry>"program is dead and <filename>/var/run</filename> pid file exists"</entry>
+            <entry>unit <emphasis>not</emphasis> failed (used by <command>is-failed</command>)</entry>
+          </row>
+          <row>
+            <entry><constant>2</constant></entry>
+            <entry>"program is dead and <filename>/var/lock</filename> lock file exists"</entry>
+            <entry>unused</entry>
+          </row>
+          <row>
+            <entry><constant>3</constant></entry>
+            <entry>"program is not running"</entry>
+            <entry>unit is not active</entry>
+          </row>
+          <row>
+            <entry><constant>4</constant></entry>
+            <entry>"program or service status is unknown"</entry>
+            <entry>no such unit</entry>
+          </row>
+        </tbody>
+      </tgroup>
+    </table>
+
+    <para>The mapping of LSB service states to systemd unit states is imperfect, so it is better to
+    not rely on those return values but to look for specific unit states and substates instead.
+    </para>
   </refsect1>
 
   <refsect1>

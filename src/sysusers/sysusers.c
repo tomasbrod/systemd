@@ -62,7 +62,7 @@ static char *arg_root = NULL;
 static bool arg_cat_config = false;
 static const char *arg_replace = NULL;
 static bool arg_inline = false;
-static bool arg_no_pager = false;
+static PagerFlags arg_pager_flags = 0;
 
 static OrderedHashmap *users = NULL, *groups = NULL;
 static OrderedHashmap *todo_uids = NULL, *todo_gids = NULL;
@@ -1681,7 +1681,6 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
 static int read_config_file(const char *fn, bool ignore_enoent) {
         _cleanup_fclose_ FILE *rf = NULL;
         FILE *f = NULL;
-        char line[LINE_MAX];
         unsigned v = 0;
         int r = 0;
 
@@ -1701,9 +1700,16 @@ static int read_config_file(const char *fn, bool ignore_enoent) {
                 f = rf;
         }
 
-        FOREACH_LINE(line, f, break) {
+        for (;;) {
+                _cleanup_free_ char *line = NULL;
                 char *l;
                 int k;
+
+                k = read_line(f, LONG_LINE_MAX, &line);
+                if (k < 0)
+                        return log_error_errno(k, "Failed to read '%s': %m", fn);
+                if (k == 0)
+                        break;
 
                 v++;
 
@@ -1754,7 +1760,7 @@ static int cat_config(void) {
         if (r < 0)
                 return r;
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         return cat_files(NULL, files, 0);
 }
@@ -1846,7 +1852,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_NO_PAGER:
-                        arg_no_pager = true;
+                        arg_pager_flags |= PAGER_DISABLE;
                         break;
 
                 case '?':

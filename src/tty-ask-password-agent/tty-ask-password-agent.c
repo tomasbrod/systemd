@@ -228,20 +228,24 @@ static int ask_password_plymouth(
         r = 0;
 
 finish:
-        explicit_bzero(buffer, sizeof(buffer));
+        explicit_bzero_safe(buffer, sizeof(buffer));
         return r;
 }
 
 static int send_passwords(const char *socket_name, char **passwords) {
         _cleanup_free_ char *packet = NULL;
         _cleanup_close_ int socket_fd = -1;
-        union sockaddr_union sa = { .un.sun_family = AF_UNIX };
+        union sockaddr_union sa = {};
         size_t packet_length = 1;
         char **p, *d;
         ssize_t n;
-        int r;
+        int r, salen;
 
         assert(socket_name);
+
+        salen = sockaddr_un_set_path(&sa.un, socket_name);
+        if (salen < 0)
+                return salen;
 
         STRV_FOREACH(p, passwords)
                 packet_length += strlen(*p) + 1;
@@ -262,9 +266,7 @@ static int send_passwords(const char *socket_name, char **passwords) {
                 goto finish;
         }
 
-        strncpy(sa.un.sun_path, socket_name, sizeof(sa.un.sun_path));
-
-        n = sendto(socket_fd, packet, packet_length, MSG_NOSIGNAL, &sa.sa, SOCKADDR_UN_LEN(sa.un));
+        n = sendto(socket_fd, packet, packet_length, MSG_NOSIGNAL, &sa.sa, salen);
         if (n < 0) {
                 r = log_debug_errno(errno, "sendto(): %m");
                 goto finish;
@@ -273,7 +275,7 @@ static int send_passwords(const char *socket_name, char **passwords) {
         r = (int) n;
 
 finish:
-        explicit_bzero(packet, packet_length);
+        explicit_bzero_safe(packet, packet_length);
         return r;
 }
 
@@ -323,7 +325,7 @@ static int parse_password(const char *filename, char **wall) {
 
                 if (asprintf(&_wall,
                              "%s%sPassword entry required for \'%s\' (PID %u).\r\n"
-                             "Please enter password with the systemd-tty-ask-password-agent tool!",
+                             "Please enter password with the systemd-tty-ask-password-agent tool:",
                              strempty(*wall),
                              *wall ? "\r\n\r\n" : "",
                              message,
@@ -348,7 +350,6 @@ static int parse_password(const char *filename, char **wall) {
                 if (arg_plymouth)
                         r = ask_password_plymouth(message, not_after, accept_cached ? ASK_PASSWORD_ACCEPT_CACHED : 0, filename, &passwords);
                 else {
-                        char *password = NULL;
                         int tty_fd = -1;
 
                         if (arg_console) {
@@ -366,18 +367,12 @@ static int parse_password(const char *filename, char **wall) {
                         r = ask_password_tty(tty_fd, message, NULL, not_after,
                                              (echo ? ASK_PASSWORD_ECHO : 0) |
                                              (arg_console ? ASK_PASSWORD_CONSOLE_COLOR : 0),
-                                             filename, &password);
+                                             filename, &passwords);
 
                         if (arg_console) {
                                 tty_fd = safe_close(tty_fd);
                                 release_terminal();
                         }
-
-                        if (r >= 0)
-                                r = strv_push(&passwords, password);
-
-                        if (r < 0)
-                                string_free_erase(password);
                 }
 
                 /* If the query went away, that's OK */
@@ -524,8 +519,12 @@ static int watch_passwords(void) {
         if (notify < 0)
                 return log_error_errno(errno, "Failed to allocate directory watch: %m");
 
-        if (inotify_add_watch(notify, "/run/systemd/ask-password", IN_CLOSE_WRITE|IN_MOVED_TO) < 0)
-                return log_error_errno(errno, "Failed to add /run/systemd/ask-password to directory watch: %m");
+        if (inotify_add_watch(notify, "/run/systemd/ask-password", IN_CLOSE_WRITE|IN_MOVED_TO) < 0) {
+                if (errno == ENOSPC)
+                        return log_error_errno(errno, "Failed to add /run/systemd/ask-password to directory watch: inotify watch limit reached");
+                else
+                        return log_error_errno(errno, "Failed to add /run/systemd/ask-password to directory watch: %m");
+        }
 
         assert_se(sigemptyset(&mask) >= 0);
         assert_se(sigset_add_many(&mask, SIGINT, SIGTERM, -1) >= 0);

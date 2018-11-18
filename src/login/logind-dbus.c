@@ -14,7 +14,8 @@
 #include "bus-error.h"
 #include "bus-unit-util.h"
 #include "bus-util.h"
-#include "device-enumerator-private.h"
+#include "cgroup-util.h"
+#include "device-util.h"
 #include "dirent-util.h"
 #include "efivars.h"
 #include "escape.h"
@@ -26,7 +27,6 @@
 #include "mkdir.h"
 #include "path-util.h"
 #include "process-util.h"
-#include "cgroup-util.h"
 #include "selinux-util.h"
 #include "sleep-config.h"
 #include "special.h"
@@ -274,6 +274,8 @@ static int property_get_scheduled_shutdown(
 
 static BUS_DEFINE_PROPERTY_GET_ENUM(property_get_handle_action, handle_action, HandleAction);
 static BUS_DEFINE_PROPERTY_GET(property_get_docked, "b", Manager, manager_is_docked_or_external_displays);
+static BUS_DEFINE_PROPERTY_GET(property_get_lid_closed, "b", Manager, manager_is_lid_closed);
+static BUS_DEFINE_PROPERTY_GET_GLOBAL(property_get_on_external_power, "b", manager_is_on_external_power);
 static BUS_DEFINE_PROPERTY_GET_GLOBAL(property_get_compat_user_tasks_max, "t", CGROUP_LIMIT_MAX);
 static BUS_DEFINE_PROPERTY_GET_REF(property_get_hashmap_size, "t", Hashmap *, (uint64_t) hashmap_size);
 
@@ -773,6 +775,9 @@ static int method_create_session(sd_bus_message *message, void *userdata, sd_bus
                 } while (hashmap_get(m->sessions, id));
         }
 
+        /* If we are not watching utmp aleady, try again */
+        manager_reconnect_utmp(m);
+
         r = manager_add_user_by_uid(m, uid, &user);
         if (r < 0)
                 goto fail;
@@ -782,9 +787,8 @@ static int method_create_session(sd_bus_message *message, void *userdata, sd_bus
                 goto fail;
 
         session_set_user(session, user);
+        session_set_leader(session, leader);
 
-        session->leader = leader;
-        session->audit_id = audit_id;
         session->type = t;
         session->class = c;
         session->remote = remote;
@@ -796,6 +800,8 @@ static int method_create_session(sd_bus_message *message, void *userdata, sd_bus
                         r = -ENOMEM;
                         goto fail;
                 }
+
+                session->tty_validity = TTY_FROM_PAM;
         }
 
         if (!isempty(display)) {
@@ -846,9 +852,9 @@ static int method_create_session(sd_bus_message *message, void *userdata, sd_bus
 
         r = sd_bus_message_enter_container(message, 'a', "(sv)");
         if (r < 0)
-                return r;
+                goto fail;
 
-        r = session_start(session, message);
+        r = session_start(session, message, error);
         if (r < 0)
                 goto fail;
 
@@ -1210,11 +1216,7 @@ static int trigger_device(Manager *m, sd_device *d) {
                         return r;
         }
 
-        r = device_enumerator_scan_devices(e);
-        if (r < 0)
-                return r;
-
-        FOREACH_DEVICE_AND_SUBSYSTEM(e, d) {
+        FOREACH_DEVICE(e, d) {
                 _cleanup_free_ char *t = NULL;
                 const char *p;
 
@@ -1226,7 +1228,7 @@ static int trigger_device(Manager *m, sd_device *d) {
                 if (!t)
                         return -ENOMEM;
 
-                (void) write_string_file(t, "change", 0);
+                (void) write_string_file(t, "change", WRITE_STRING_FILE_DISABLE_BUFFER);
         }
 
         return 0;
@@ -1777,6 +1779,8 @@ static int method_do_shutdown_or_sleep(
                         return sd_bus_error_set(error, BUS_ERROR_SLEEP_VERB_NOT_SUPPORTED, "Not enough swap space for hibernation");
                 if (r == -ENOMEDIUM)
                         return sd_bus_error_set(error, BUS_ERROR_SLEEP_VERB_NOT_SUPPORTED, "Kernel image has been removed, can't hibernate");
+                if (r == -EADV)
+                        return sd_bus_error_set(error, BUS_ERROR_SLEEP_VERB_NOT_SUPPORTED, "Resume not configured, can't hibernate");
                 if (r == 0)
                         return sd_bus_error_setf(error, BUS_ERROR_SLEEP_VERB_NOT_SUPPORTED, "Sleep verb \"%s\" not supported", sleep_verb);
                 if (r < 0)
@@ -2159,6 +2163,7 @@ static int method_cancel_scheduled_shutdown(sd_bus_message *message, void *userd
 
         if (cancelled && m->enable_wall_messages) {
                 _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
+                _cleanup_free_ char *username = NULL;
                 const char *tty = NULL;
                 uid_t uid = 0;
                 int r;
@@ -2169,8 +2174,9 @@ static int method_cancel_scheduled_shutdown(sd_bus_message *message, void *userd
                         (void) sd_bus_creds_get_tty(creds, &tty);
                 }
 
+                username = uid_to_name(uid);
                 utmp_wall("The system shutdown has been cancelled",
-                          uid_to_name(uid), tty, logind_wall_tty_filter, m);
+                          username, tty, logind_wall_tty_filter, m);
         }
 
         return sd_bus_reply_method_return(message, "b", cancelled);
@@ -2203,7 +2209,7 @@ static int method_can_shutdown_or_sleep(
 
         if (sleep_verb) {
                 r = can_sleep(sleep_verb);
-                if (IN_SET(r,  0, -ENOSPC, -ENOMEDIUM))
+                if (IN_SET(r,  0, -ENOSPC, -ENOMEDIUM, -EADV))
                         return sd_bus_reply_method_return(message, "s", "na");
                 if (r < 0)
                         return r;
@@ -2261,11 +2267,13 @@ static int method_can_shutdown_or_sleep(
                 if (r < 0)
                         return r;
 
-                if (r > 0 && !result)
-                        result = "yes";
-                else if (challenge && (!result || streq(result, "yes")))
-                        result = "challenge";
-                else
+                if (r > 0) {
+                        if (!result)
+                                result = "yes";
+                } else if (challenge) {
+                        if (!result || streq(result, "yes"))
+                                result = "challenge";
+                } else
                         result = "no";
         }
 
@@ -2452,7 +2460,7 @@ static int method_can_reboot_to_firmware_setup(
         r = efi_reboot_to_firmware_supported();
         if (r < 0) {
                 if (r != -EOPNOTSUPP)
-                        log_warning_errno(errno, "Failed to determine whether reboot to firmware is supported: %m");
+                        log_warning_errno(r, "Failed to determine whether reboot to firmware is supported: %m");
 
                 return sd_bus_reply_method_return(message, "s", "na");
         }
@@ -2641,13 +2649,14 @@ const sd_bus_vtable manager_vtable[] = {
         SD_BUS_PROPERTY("KillOnlyUsers", "as", NULL, offsetof(Manager, kill_only_users), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("KillExcludeUsers", "as", NULL, offsetof(Manager, kill_exclude_users), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("KillUserProcesses", "b", NULL, offsetof(Manager, kill_user_processes), SD_BUS_VTABLE_PROPERTY_CONST),
-        SD_BUS_PROPERTY("RebootToFirmwareSetup", "b", property_get_reboot_to_firmware_setup, 0, SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("RebootToFirmwareSetup", "b", property_get_reboot_to_firmware_setup, 0, 0),
         SD_BUS_PROPERTY("IdleHint", "b", property_get_idle_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("IdleSinceHint", "t", property_get_idle_since_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("IdleSinceHintMonotonic", "t", property_get_idle_since_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("BlockInhibited", "s", property_get_inhibited, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("DelayInhibited", "s", property_get_inhibited, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("InhibitDelayMaxUSec", "t", NULL, offsetof(Manager, inhibit_delay_max), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("UserStopDelayUSec", "t", NULL, offsetof(Manager, user_stop_delay), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("HandlePowerKey", "s", property_get_handle_action, offsetof(Manager, handle_power_key), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("HandleSuspendKey", "s", property_get_handle_action, offsetof(Manager, handle_suspend_key), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("HandleHibernateKey", "s", property_get_handle_action, offsetof(Manager, handle_hibernate_key), SD_BUS_VTABLE_PROPERTY_CONST),
@@ -2661,6 +2670,8 @@ const sd_bus_vtable manager_vtable[] = {
         SD_BUS_PROPERTY("PreparingForSleep", "b", property_get_preparing, 0, 0),
         SD_BUS_PROPERTY("ScheduledShutdown", "(st)", property_get_scheduled_shutdown, 0, 0),
         SD_BUS_PROPERTY("Docked", "b", property_get_docked, 0, 0),
+        SD_BUS_PROPERTY("LidClosed", "b", property_get_lid_closed, 0, 0),
+        SD_BUS_PROPERTY("OnExternalPower", "b", property_get_on_external_power, 0, 0),
         SD_BUS_PROPERTY("RemoveIPC", "b", bus_property_get_bool, offsetof(Manager, remove_ipc), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("RuntimeDirectorySize", "t", NULL, offsetof(Manager, runtime_dir_size), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("InhibitorsMax", "t", NULL, offsetof(Manager, inhibitors_max), SD_BUS_VTABLE_PROPERTY_CONST),
@@ -2728,24 +2739,20 @@ const sd_bus_vtable manager_vtable[] = {
 };
 
 static int session_jobs_reply(Session *s, const char *unit, const char *result) {
-        int r = 0;
-
         assert(s);
         assert(unit);
 
         if (!s->started)
-                return r;
+                return 0;
 
-        if (streq(result, "done"))
-                r = session_send_create_reply(s, NULL);
-        else {
+        if (result && !streq(result, "done")) {
                 _cleanup_(sd_bus_error_free) sd_bus_error e = SD_BUS_ERROR_NULL;
 
-                sd_bus_error_setf(&e, BUS_ERROR_JOB_FAILED, "Start job for unit %s failed with '%s'", unit, result);
-                r = session_send_create_reply(s, &e);
+                sd_bus_error_setf(&e, BUS_ERROR_JOB_FAILED, "Start job for unit '%s' failed with '%s'", unit, result);
+                return session_send_create_reply(s, &e);
         }
 
-        return r;
+        return session_send_create_reply(s, NULL);
 }
 
 int match_job_removed(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -2778,30 +2785,29 @@ int match_job_removed(sd_bus_message *message, void *userdata, sd_bus_error *err
         }
 
         session = hashmap_get(m->session_units, unit);
-        if (session && streq_ptr(path, session->scope_job)) {
-                session->scope_job = mfree(session->scope_job);
-                session_jobs_reply(session, unit, result);
+        if (session) {
+                if (streq_ptr(path, session->scope_job)) {
+                        session->scope_job = mfree(session->scope_job);
+                        (void) session_jobs_reply(session, unit, result);
 
-                session_save(session);
-                user_save(session->user);
+                        session_save(session);
+                        user_save(session->user);
+                }
+
                 session_add_to_gc_queue(session);
         }
 
         user = hashmap_get(m->user_units, unit);
-        if (user &&
-            (streq_ptr(path, user->service_job) ||
-             streq_ptr(path, user->slice_job))) {
-
-                if (streq_ptr(path, user->service_job))
+        if (user) {
+                if (streq_ptr(path, user->service_job)) {
                         user->service_job = mfree(user->service_job);
 
-                if (streq_ptr(path, user->slice_job))
-                        user->slice_job = mfree(user->slice_job);
+                        LIST_FOREACH(sessions_by_user, session, user->sessions)
+                                (void) session_jobs_reply(session, unit, NULL /* don't propagate user service failures to the client */);
 
-                LIST_FOREACH(sessions_by_user, session, user->sessions)
-                        session_jobs_reply(session, unit, result);
+                        user_save(user);
+                }
 
-                user_save(user);
                 user_add_to_gc_queue(user);
         }
 
@@ -2933,13 +2939,15 @@ int manager_start_scope(
                 pid_t pid,
                 const char *slice,
                 const char *description,
-                const char *after,
-                const char *after2,
+                char **wants,
+                char **after,
+                const char *requires_mounts_for,
                 sd_bus_message *more_properties,
                 sd_bus_error *error,
                 char **job) {
 
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
+        char **i;
         int r;
 
         assert(manager);
@@ -2977,14 +2985,20 @@ int manager_start_scope(
                         return r;
         }
 
-        if (!isempty(after)) {
-                r = sd_bus_message_append(m, "(sv)", "After", "as", 1, after);
+        STRV_FOREACH(i, wants) {
+                r = sd_bus_message_append(m, "(sv)", "Wants", "as", 1, *i);
                 if (r < 0)
                         return r;
         }
 
-        if (!isempty(after2)) {
-                r = sd_bus_message_append(m, "(sv)", "After", "as", 1, after2);
+        STRV_FOREACH(i, after) {
+                r = sd_bus_message_append(m, "(sv)", "After", "as", 1, *i);
+                if (r < 0)
+                        return r;
+        }
+
+        if (!empty_or_root(requires_mounts_for)) {
+                r = sd_bus_message_append(m, "(sv)", "RequiresMountsFor", "as", 1, requires_mounts_for);
                 if (r < 0)
                         return r;
         }
@@ -3081,7 +3095,8 @@ int manager_stop_unit(Manager *manager, const char *unit, sd_bus_error *error, c
         return strdup_job(reply, job);
 }
 
-int manager_abandon_scope(Manager *manager, const char *scope, sd_bus_error *error) {
+int manager_abandon_scope(Manager *manager, const char *scope, sd_bus_error *ret_error) {
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_free_ char *path = NULL;
         int r;
 
@@ -3098,17 +3113,16 @@ int manager_abandon_scope(Manager *manager, const char *scope, sd_bus_error *err
                         path,
                         "org.freedesktop.systemd1.Scope",
                         "Abandon",
-                        error,
+                        &error,
                         NULL,
                         NULL);
         if (r < 0) {
-                if (sd_bus_error_has_name(error, BUS_ERROR_NO_SUCH_UNIT) ||
-                    sd_bus_error_has_name(error, BUS_ERROR_LOAD_FAILED) ||
-                    sd_bus_error_has_name(error, BUS_ERROR_SCOPE_NOT_RUNNING)) {
-                        sd_bus_error_free(error);
+                if (sd_bus_error_has_name(&error, BUS_ERROR_NO_SUCH_UNIT) ||
+                    sd_bus_error_has_name(&error, BUS_ERROR_LOAD_FAILED) ||
+                    sd_bus_error_has_name(&error, BUS_ERROR_SCOPE_NOT_RUNNING))
                         return 0;
-                }
 
+                sd_bus_error_move(ret_error, &error);
                 return r;
         }
 
@@ -3130,7 +3144,7 @@ int manager_kill_unit(Manager *manager, const char *unit, KillWho who, int signo
                         "ssi", unit, who == KILL_LEADER ? "main" : "all", signo);
 }
 
-int manager_unit_is_active(Manager *manager, const char *unit) {
+int manager_unit_is_active(Manager *manager, const char *unit, sd_bus_error *ret_error) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_free_ char *path = NULL;
@@ -3166,17 +3180,18 @@ int manager_unit_is_active(Manager *manager, const char *unit) {
                     sd_bus_error_has_name(&error, BUS_ERROR_LOAD_FAILED))
                         return false;
 
+                sd_bus_error_move(ret_error, &error);
                 return r;
         }
 
         r = sd_bus_message_read(reply, "s", &state);
         if (r < 0)
-                return -EINVAL;
+                return r;
 
-        return !streq(state, "inactive") && !streq(state, "failed");
+        return !STR_IN_SET(state, "inactive", "failed");
 }
 
-int manager_job_is_active(Manager *manager, const char *path) {
+int manager_job_is_active(Manager *manager, const char *path, sd_bus_error *ret_error) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         int r;
@@ -3201,6 +3216,7 @@ int manager_job_is_active(Manager *manager, const char *path) {
                 if (sd_bus_error_has_name(&error, SD_BUS_ERROR_UNKNOWN_OBJECT))
                         return false;
 
+                sd_bus_error_move(ret_error, &error);
                 return r;
         }
 

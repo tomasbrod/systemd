@@ -20,6 +20,7 @@
 #include "mkdir.h"
 #include "parse-util.h"
 #include "process-util.h"
+#include "rlimit-util.h"
 #include "sigbus.h"
 #include "signal-util.h"
 #include "string-util.h"
@@ -148,10 +149,7 @@ static int load_cursor_state(Uploader *u) {
         if (!u->state_file)
                 return 0;
 
-        r = parse_env_file(NULL, u->state_file, NEWLINE,
-                           "LAST_CURSOR",  &u->last_cursor,
-                           NULL);
-
+        r = parse_env_file(NULL, u->state_file, "LAST_CURSOR", &u->last_cursor);
         if (r == -ENOENT)
                 log_debug("State file %s is not present.", u->state_file);
         else if (r < 0)
@@ -280,30 +278,30 @@ int start_upload(Uploader *u,
 
 static size_t fd_input_callback(void *buf, size_t size, size_t nmemb, void *userp) {
         Uploader *u = userp;
-
-        ssize_t r;
+        ssize_t n;
 
         assert(u);
-        assert(nmemb <= SSIZE_MAX / size);
+        assert(nmemb < SSIZE_MAX / size);
 
         if (u->input < 0)
                 return 0;
 
-        r = read(u->input, buf, size * nmemb);
-        log_debug("%s: allowed %zu, read %zd", __func__, size*nmemb, r);
+        assert(!size_multiply_overflow(size, nmemb));
 
-        if (r > 0)
-                return r;
+        n = read(u->input, buf, size * nmemb);
+        log_debug("%s: allowed %zu, read %zd", __func__, size*nmemb, n);
+        if (n > 0)
+                return n;
 
         u->uploading = false;
-        if (r == 0) {
-                log_debug("Reached EOF");
-                close_fd_input(u);
-                return 0;
-        } else {
+        if (n < 0) {
                 log_error_errno(errno, "Aborting transfer after read error on input: %m.");
                 return CURL_READFUNC_ABORT;
         }
+
+        log_debug("Reached EOF");
+        close_fd_input(u);
+        return 0;
 }
 
 static void close_fd_input(Uploader *u) {
@@ -779,6 +777,9 @@ int main(int argc, char **argv) {
 
         log_show_color(true);
         log_parse_environment();
+
+        /* The journal merging logic potentially needs a lot of fds. */
+        (void) rlimit_nofile_bump(HIGH_RLIMIT_NOFILE);
 
         r = parse_config();
         if (r < 0)

@@ -247,20 +247,17 @@ static int fsck_progress_socket(void) {
                 .un.sun_path = "/run/systemd/fsck.progress",
         };
 
-        int fd, r;
+        _cleanup_close_ int fd = -1;
 
         fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0)
                 return log_warning_errno(errno, "socket(): %m");
 
-        if (connect(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0) {
-                r = log_full_errno(IN_SET(errno, ECONNREFUSED, ENOENT) ? LOG_DEBUG : LOG_WARNING,
-                                   errno, "Failed to connect to progress socket %s, ignoring: %m", sa.un.sun_path);
-                safe_close(fd);
-                return r;
-        }
+        if (connect(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0)
+                return log_full_errno(IN_SET(errno, ECONNREFUSED, ENOENT) ? LOG_DEBUG : LOG_WARNING,
+                                      errno, "Failed to connect to progress socket %s, ignoring: %m", sa.un.sun_path);
 
-        return fd;
+        return TAKE_FD(fd);
 }
 
 int main(int argc, char *argv[]) {
@@ -350,20 +347,19 @@ int main(int argc, char *argv[]) {
 
                 r = sd_device_get_devname(dev, &device);
                 if (r < 0) {
-                        log_error_errno(r, "Failed to detect device node of root directory: %m");
+                        log_device_error_errno(dev, r, "Failed to detect device node of root directory: %m");
                         goto finish;
                 }
 
                 root_directory = true;
         }
 
-        r = sd_device_get_property_value(dev, "ID_FS_TYPE", &type);
-        if (r >= 0) {
+        if (sd_device_get_property_value(dev, "ID_FS_TYPE", &type) >= 0) {
                 r = fsck_exists(type);
                 if (r < 0)
-                        log_warning_errno(r, "Couldn't detect if fsck.%s may be used for %s, proceeding: %m", type, device);
+                        log_device_warning_errno(dev, r, "Couldn't detect if fsck.%s may be used, proceeding: %m", type);
                 else if (r == 0) {
-                        log_info("fsck.%s doesn't exist, not checking file system on %s.", type, device);
+                        log_device_info(dev, "fsck.%s doesn't exist, not checking file system.", type);
                         goto finish;
                 }
         }

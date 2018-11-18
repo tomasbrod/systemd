@@ -17,6 +17,7 @@
 #include "socket-util.h"
 #include "string-util.h"
 #include "util.h"
+#include "tests.h"
 
 static void test_ifname_valid(void) {
         assert(ifname_valid("foo"));
@@ -404,7 +405,7 @@ static void test_sockaddr_un_len(void) {
                 .sun_path = "\0foobar",
         };
 
-        assert_se(SOCKADDR_UN_LEN(fs) == offsetof(struct sockaddr_un, sun_path) + strlen(fs.sun_path));
+        assert_se(SOCKADDR_UN_LEN(fs) == offsetof(struct sockaddr_un, sun_path) + strlen(fs.sun_path) + 1);
         assert_se(SOCKADDR_UN_LEN(abstract) == offsetof(struct sockaddr_un, sun_path) + 1 + strlen(abstract.sun_path + 1));
 }
 
@@ -698,7 +699,7 @@ static void test_send_emptydata(void) {
 
 int main(int argc, char *argv[]) {
 
-        log_set_max_level(LOG_DEBUG);
+        test_setup_logging(LOG_DEBUG);
 
         test_ifname_valid();
 

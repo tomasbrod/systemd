@@ -320,7 +320,7 @@ static int manager_adjust_clock(Manager *m, double offset, int leap_sec) {
 }
 
 static bool manager_sample_spike_detection(Manager *m, double offset, double delay) {
-        unsigned int i, idx_cur, idx_new, idx_min;
+        unsigned i, idx_cur, idx_new, idx_min;
         double jitter;
         double j;
 
@@ -629,8 +629,6 @@ static int manager_receive_response(sd_event_source *source, int fd, uint32_t re
 
 static int manager_listen_setup(Manager *m) {
         union sockaddr_union addr = {};
-        static const int tos = IPTOS_LOWDELAY;
-        static const int on = 1;
         int r;
 
         assert(m);
@@ -651,11 +649,11 @@ static int manager_listen_setup(Manager *m) {
         if (r < 0)
                 return -errno;
 
-        r = setsockopt(m->server_socket, SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on));
+        r = setsockopt_int(m->server_socket, SOL_SOCKET, SO_TIMESTAMPNS, true);
         if (r < 0)
-                return -errno;
+                return r;
 
-        (void) setsockopt(m->server_socket, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+        (void) setsockopt_int(m->server_socket, IPPROTO_IP, IP_TOS, IPTOS_LOWDELAY);
 
         return sd_event_add_io(m->event, &m->event_receive, m->server_socket, EPOLLIN, manager_receive_response, m);
 }

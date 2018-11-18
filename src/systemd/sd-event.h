@@ -33,7 +33,8 @@
   - Supports event source prioritization
   - Scales better with a large number of time events because it does not require one timerfd each
   - Automatically tries to coalesce timer events system-wide
-  - Handles signals and child PIDs
+  - Handles signals, child PIDs, inotify events
+  - Supports systemd-style automatic watchdog event generation
 */
 
 _SD_BEGIN_DECLARATIONS;
@@ -142,6 +143,8 @@ int sd_event_source_get_child_pid(sd_event_source *s, pid_t *pid);
 int sd_event_source_get_inotify_mask(sd_event_source *s, uint32_t *ret);
 int sd_event_source_set_destroy_callback(sd_event_source *s, sd_event_destroy_t callback);
 int sd_event_source_get_destroy_callback(sd_event_source *s, sd_event_destroy_t *ret);
+int sd_event_source_get_floating(sd_event_source *s);
+int sd_event_source_set_floating(sd_event_source *s, int b);
 
 /* Define helpers so that __attribute__((cleanup(sd_event_unrefp))) and similar may be used. */
 _SD_DEFINE_POINTER_CLEANUP_FUNC(sd_event, sd_event_unref);

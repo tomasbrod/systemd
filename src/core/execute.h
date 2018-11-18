@@ -225,6 +225,9 @@ struct ExecContext {
         struct iovec* log_extra_fields;
         size_t n_log_extra_fields;
 
+        usec_t log_rate_limit_interval_usec;
+        unsigned log_rate_limit_burst;
+
         bool cpu_sched_reset_on_fork;
         bool non_blocking;
         bool private_tmp;
@@ -349,8 +352,8 @@ void exec_command_reset_status_array(ExecCommand *c, size_t n);
 void exec_command_reset_status_list_array(ExecCommand **c, size_t n);
 void exec_command_dump_list(ExecCommand *c, FILE *f, const char *prefix);
 void exec_command_append_list(ExecCommand **l, ExecCommand *e);
-int exec_command_set(ExecCommand *c, const char *path, ...);
-int exec_command_append(ExecCommand *c, const char *path, ...);
+int exec_command_set(ExecCommand *c, const char *path, ...) _sentinel_;
+int exec_command_append(ExecCommand *c, const char *path, ...) _sentinel_;
 
 void exec_context_init(ExecContext *c);
 void exec_context_done(ExecContext *c);
@@ -379,6 +382,8 @@ int exec_runtime_serialize(const Manager *m, FILE *f, FDSet *fds);
 int exec_runtime_deserialize_compat(Unit *u, const char *key, const char *value, FDSet *fds);
 void exec_runtime_deserialize_one(Manager *m, const char *value, FDSet *fds);
 void exec_runtime_vacuum(Manager *m);
+
+void exec_params_clear(ExecParameters *p);
 
 const char* exec_output_to_string(ExecOutput i) _const_;
 ExecOutput exec_output_from_string(const char *s) _pure_;

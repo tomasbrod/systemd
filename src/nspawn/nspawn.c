@@ -189,7 +189,7 @@ static const char *arg_container_service_name = "systemd-nspawn";
 static bool arg_notify_ready = false;
 static bool arg_use_cgns = true;
 static unsigned long arg_clone_ns_flags = CLONE_NEWIPC|CLONE_NEWPID|CLONE_NEWUTS;
-static MountSettingsMask arg_mount_settings = MOUNT_APPLY_APIVFS_RO;
+static MountSettingsMask arg_mount_settings = MOUNT_APPLY_APIVFS_RO|MOUNT_APPLY_TMPFS_TMP;
 static void *arg_root_hash = NULL;
 static size_t arg_root_hash_size = 0;
 static char **arg_syscall_whitelist = NULL;
@@ -207,7 +207,7 @@ static int help(void) {
         _cleanup_free_ char *link = NULL;
         int r;
 
-        (void) pager_open(false, false);
+        (void) pager_open(false);
 
         r = terminal_urlify_man("systemd-nspawn", "1", &link);
         if (r < 0)
@@ -402,8 +402,14 @@ static void parse_share_ns_env(const char *name, unsigned long ns_flag) {
 }
 
 static void parse_mount_settings_env(void) {
-        int r;
         const char *e;
+        int r;
+
+        r = getenv_bool("SYSTEMD_NSPAWN_TMPFS_TMP");
+        if (r >= 0)
+                SET_FLAG(arg_mount_settings, MOUNT_APPLY_TMPFS_TMP, r > 0);
+        else if (r != -ENXIO)
+                log_warning_errno(r, "Failed to parse $SYSTEMD_NSPAWN_TMPFS_TMP, ignoring: %m");
 
         e = getenv("SYSTEMD_NSPAWN_API_VFS_WRITABLE");
         if (!e)
@@ -568,6 +574,7 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case 'x':
                         arg_ephemeral = true;
+                        arg_settings_mask |= SETTING_EPHEMERAL;
                         break;
 
                 case 'u':
@@ -1656,12 +1663,7 @@ static int setup_resolv_conf(const char *dest) {
                 if (arg_private_network)
                         m = RESOLV_CONF_OFF;
                 else if (have_resolv_conf(STATIC_RESOLV_CONF) > 0 && resolved_listening() > 0)
-                        /* resolved is enabled on the host. In this, case bind mount its static resolv.conf file into the
-                         * container, so that the container can use the host's resolver. Given that network namespacing is
-                         * disabled it's only natural of the container also uses the host's resolver. It also has the big
-                         * advantage that the container will be able to follow the host's DNS server configuration changes
-                         * transparently. */
-                        m = RESOLV_CONF_BIND_STATIC;
+                        m = arg_read_only && arg_volatile_mode != VOLATILE_YES ? RESOLV_CONF_BIND_STATIC : RESOLV_CONF_COPY_STATIC;
                 else if (have_resolv_conf("/etc/resolv.conf") > 0)
                         m = arg_read_only && arg_volatile_mode != VOLATILE_YES ? RESOLV_CONF_BIND_HOST : RESOLV_CONF_COPY_HOST;
                 else
@@ -2025,7 +2027,7 @@ static int setup_journal(const char *directory) {
         _cleanup_free_ char *d = NULL;
         const char *p, *q;
         bool try;
-        char id[33];
+        char id[33], *dirname;
         int r;
 
         /* Don't link journals in ephemeral mode */
@@ -2049,17 +2051,15 @@ static int setup_journal(const char *directory) {
                 return -EEXIST;
         }
 
-        r = userns_mkdir(directory, "/var", 0755, 0, 0);
-        if (r < 0)
-                return log_error_errno(r, "Failed to create /var: %m");
-
-        r = userns_mkdir(directory, "/var/log", 0755, 0, 0);
-        if (r < 0)
-                return log_error_errno(r, "Failed to create /var/log: %m");
-
-        r = userns_mkdir(directory, "/var/log/journal", 0755, 0, 0);
-        if (r < 0)
-                return log_error_errno(r, "Failed to create /var/log/journal: %m");
+        FOREACH_STRING(dirname, "/var", "/var/log", "/var/log/journal") {
+                r = userns_mkdir(directory, dirname, 0755, 0, 0);
+                if (r < 0) {
+                        bool ignore = r == -EROFS && try;
+                        log_full_errno(ignore ? LOG_DEBUG : LOG_ERR, r,
+                                       "Failed to create %s%s: %m", dirname, ignore ? ", ignoring" : "");
+                        return ignore ? 0 : r;
+                }
+        }
 
         (void) sd_id128_to_string(arg_uuid, id);
 
@@ -2176,7 +2176,7 @@ static int reset_audit_loginuid(void) {
         if (streq(p, "4294967295"))
                 return 0;
 
-        r = write_string_file("/proc/self/loginuid", "4294967295", 0);
+        r = write_string_file("/proc/self/loginuid", "4294967295", WRITE_STRING_FILE_DISABLE_BUFFER);
         if (r < 0) {
                 log_error_errno(r,
                                 "Failed to reset audit login UID. This probably means that your kernel is too\n"
@@ -2574,6 +2574,17 @@ static int inner_child(
         _cleanup_strv_free_ char **env_use = NULL;
         int r;
 
+        /* This is the "inner" child process, i.e. the one forked off by the "outer" child process, which is the one
+         * the container manager itself forked off. At the time of clone() it gained its own CLONE_NEWNS, CLONE_NEWPID,
+         * CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER namespaces. Note that it has its own CLONE_NEWNS namespace,
+         * separate from the CLONE_NEWNS created for the "outer" child, and also separate from the host's CLONE_NEWNS
+         * namespace. The reason for having two levels of CLONE_NEWNS namespaces is that the "inner" one is owned by
+         * the CLONE_NEWUSER namespace of the container, while the "outer" one is owned by the host's CLONE_NEWUSER
+         * namespace.
+         *
+         * Note at this point we have no CLONE_NEWNET namespace yet. We'll acquire that one later through
+         * unshare(). See below. */
+
         assert(barrier);
         assert(directory);
         assert(kmsg_socket >= 0);
@@ -2783,7 +2794,18 @@ static int inner_child(
 
                 exec_target = "/usr/lib/systemd/systemd, /lib/systemd/systemd, /sbin/init";
         } else if (!strv_isempty(arg_parameters)) {
+                const char *dollar_path;
+
                 exec_target = arg_parameters[0];
+
+                /* Use the user supplied search $PATH if there is one, or DEFAULT_PATH_COMPAT if not to search the
+                 * binary. */
+                dollar_path = strv_env_get(env_use, "PATH");
+                if (dollar_path) {
+                        if (putenv((char*) dollar_path) != 0)
+                                return log_error_errno(errno, "Failed to update $PATH: %m");
+                }
+
                 execvpe(arg_parameters[0], arg_parameters, env_use);
         } else {
                 if (!arg_chdir)
@@ -2800,10 +2822,10 @@ static int inner_child(
 }
 
 static int setup_sd_notify_child(void) {
-        static const int one = 1;
-        int fd = -1;
+        _cleanup_close_ int fd = -1;
         union sockaddr_union sa = {
-                .sa.sa_family = AF_UNIX,
+                .un.sun_family = AF_UNIX,
+                .un.sun_path = NSPAWN_NOTIFY_SOCKET_PATH,
         };
         int r;
 
@@ -2812,28 +2834,21 @@ static int setup_sd_notify_child(void) {
                 return log_error_errno(errno, "Failed to allocate notification socket: %m");
 
         (void) mkdir_parents(NSPAWN_NOTIFY_SOCKET_PATH, 0755);
-        (void) unlink(NSPAWN_NOTIFY_SOCKET_PATH);
+        (void) sockaddr_un_unlink(&sa.un);
 
-        strncpy(sa.un.sun_path, NSPAWN_NOTIFY_SOCKET_PATH, sizeof(sa.un.sun_path)-1);
         r = bind(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
-        if (r < 0) {
-                safe_close(fd);
-                return log_error_errno(errno, "bind(%s) failed: %m", sa.un.sun_path);
-        }
+        if (r < 0)
+                return log_error_errno(errno, "bind(" NSPAWN_NOTIFY_SOCKET_PATH ") failed: %m");
 
         r = userns_lchown(NSPAWN_NOTIFY_SOCKET_PATH, 0, 0);
-        if (r < 0) {
-                safe_close(fd);
+        if (r < 0)
                 return log_error_errno(r, "Failed to chown " NSPAWN_NOTIFY_SOCKET_PATH ": %m");
-        }
 
-        r = setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &one, sizeof(one));
-        if (r < 0) {
-                safe_close(fd);
-                return log_error_errno(errno, "SO_PASSCRED failed: %m");
-        }
+        r = setsockopt_int(fd, SOL_SOCKET, SO_PASSCRED, true);
+        if (r < 0)
+                return log_error_errno(r, "SO_PASSCRED failed: %m");
 
-        return fd;
+        return TAKE_FD(fd);
 }
 
 static int outer_child(
@@ -2857,6 +2872,11 @@ static int outer_child(
         int r, which_failed;
         pid_t pid;
         ssize_t l;
+
+        /* This is the "outer" child process, i.e the one forked off by the container manager itself. It already has
+         * its own CLONE_NEWNS namespace (which was created by the clone()). It still lives in the host's CLONE_NEWPID,
+         * CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER and CLONE_NEWNET namespaces. After it completed a number of
+         * initializations a second child (the "inner" one) is forked off it, and it exits. */
 
         assert(barrier);
         assert(directory);
@@ -2939,7 +2959,8 @@ static int outer_child(
                         }
                 }
 
-                log_info("Selected user namespace base " UID_FMT " and range " UID_FMT ".", arg_uid_shift, arg_uid_range);
+                log_full(arg_quiet ? LOG_DEBUG : LOG_INFO,
+                         "Selected user namespace base " UID_FMT " and range " UID_FMT ".", arg_uid_shift, arg_uid_range);
         }
 
         if (dissected_image) {
@@ -3127,7 +3148,7 @@ static int outer_child(
                 if (arg_network_namespace_path) {
                         r = namespace_enter(-1, -1, netns_fd, -1, -1);
                         if (r < 0)
-                                return r;
+                                return log_error_errno(r, "Failed to join network namespace: %m");
                 }
 
                 r = inner_child(barrier, directory, secondary, kmsg_socket, rtnl_socket, fds);
@@ -3244,13 +3265,13 @@ static int setup_uid_map(pid_t pid) {
 
         xsprintf(uid_map, "/proc/" PID_FMT "/uid_map", pid);
         xsprintf(line, UID_FMT " " UID_FMT " " UID_FMT "\n", 0, arg_uid_shift, arg_uid_range);
-        r = write_string_file(uid_map, line, 0);
+        r = write_string_file(uid_map, line, WRITE_STRING_FILE_DISABLE_BUFFER);
         if (r < 0)
                 return log_error_errno(r, "Failed to write UID map: %m");
 
         /* We always assign the same UID and GID ranges */
         xsprintf(uid_map, "/proc/" PID_FMT "/gid_map", pid);
-        r = write_string_file(uid_map, line, 0);
+        r = write_string_file(uid_map, line, WRITE_STRING_FILE_DISABLE_BUFFER);
         if (r < 0)
                 return log_error_errno(r, "Failed to write GID map: %m");
 
@@ -3359,6 +3380,9 @@ static int merge_settings(Settings *settings, const char *path) {
                 arg_start_mode = settings->start_mode;
                 strv_free_and_replace(arg_parameters, settings->parameters);
         }
+
+        if ((arg_settings_mask & SETTING_EPHEMERAL) == 0)
+                arg_ephemeral = settings->ephemeral;
 
         if ((arg_settings_mask & SETTING_PIVOT_ROOT) == 0 &&
             settings->pivot_root_new) {
@@ -3737,10 +3761,12 @@ static int run(int master,
                         return log_error_errno(errno, "Cannot open file %s: %m", arg_network_namespace_path);
 
                 r = fd_is_network_ns(netns_fd);
-                if (r < 0 && r != -ENOTTY)
+                if (r == -EUCLEAN)
+                        log_debug_errno(r, "Cannot determine if passed network namespace path '%s' really refers to a network namespace, assuming it does.", arg_network_namespace_path);
+                else if (r < 0)
                         return log_error_errno(r, "Failed to check %s fs type: %m", arg_network_namespace_path);
-                if (r == 0) {
-                        log_error("Path %s doesn't refer to a network namespace", arg_network_namespace_path);
+                else if (r == 0) {
+                        log_error("Path %s doesn't refer to a network namespace, refusing.", arg_network_namespace_path);
                         return -EINVAL;
                 }
         }
@@ -3836,7 +3862,8 @@ static int run(int master,
                 if (l < 0)
                         return log_error_errno(errno, "Failed to read cgroup mode: %m");
                 if (l != sizeof(arg_unified_cgroup_hierarchy)) {
-                        log_error("Short read while reading cgroup mode.");
+                        log_error("Short read while reading cgroup mode (%zu bytes).%s",
+                                  l, l == 0 ? " The child is most likely dead." : "");
                         return -EIO;
                 }
         }
@@ -3948,6 +3975,10 @@ static int run(int master,
                 r = sd_bus_default_system(&bus);
                 if (r < 0)
                         return log_error_errno(r, "Failed to open system bus: %m");
+
+                r = sd_bus_set_close_on_exit(bus, false);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to disable close-on-exit behaviour: %m");
         }
 
         if (!arg_keep_unit) {
@@ -4099,8 +4130,12 @@ static int run(int master,
                 putc('\n', stdout);
 
         /* Kill if it is not dead yet anyway */
-        if (arg_register && !arg_keep_unit && bus)
-                terminate_machine(bus, *pid);
+        if (bus) {
+                if (arg_register)
+                        terminate_machine(bus, arg_machine);
+                else if (!arg_keep_unit)
+                        terminate_scope(bus, arg_machine);
+        }
 
         /* Normally redundant, but better safe than sorry */
         (void) kill(*pid, SIGKILL);
@@ -4355,16 +4390,15 @@ int main(int argc, char *argv[]) {
                                                           BTRFS_SNAPSHOT_FALLBACK_IMMUTABLE |
                                                           BTRFS_SNAPSHOT_RECURSIVE |
                                                           BTRFS_SNAPSHOT_QUOTA);
-                                if (r == -EEXIST) {
-                                        if (!arg_quiet)
-                                                log_info("Directory %s already exists, not populating from template %s.", arg_directory, arg_template);
-                                } else if (r < 0) {
+                                if (r == -EEXIST)
+                                        log_full(arg_quiet ? LOG_DEBUG : LOG_INFO,
+                                                 "Directory %s already exists, not populating from template %s.", arg_directory, arg_template);
+                                else if (r < 0) {
                                         log_error_errno(r, "Couldn't create snapshot %s from %s: %m", arg_directory, arg_template);
                                         goto finish;
-                                } else {
-                                        if (!arg_quiet)
-                                                log_info("Populated %s from template %s.", arg_directory, arg_template);
-                                }
+                                } else
+                                        log_full(arg_quiet ? LOG_DEBUG : LOG_INFO,
+                                                 "Populated %s from template %s.", arg_directory, arg_template);
                         }
                 }
 

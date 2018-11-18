@@ -4,6 +4,7 @@
 #include <macro.h>
 #include <linux/ethtool.h>
 
+#include "conf-parser.h"
 #include "missing.h"
 
 struct link_config;
@@ -54,6 +55,7 @@ typedef enum NetDevPort {
 } NetDevPort;
 
 #define ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NU32    (SCHAR_MAX)
+#define ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NBYTES  (4 * ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NU32)
 
 /* layout of the struct passed from/to userland */
 struct ethtool_link_usettings {
@@ -81,7 +83,7 @@ typedef struct netdev_channels {
 int ethtool_connect(int *ret);
 
 int ethtool_get_driver(int *fd, const char *ifname, char **ret);
-int ethtool_set_speed(int *fd, const char *ifname, unsigned int speed, Duplex duplex);
+int ethtool_set_speed(int *fd, const char *ifname, unsigned speed, Duplex duplex);
 int ethtool_set_wol(int *fd, const char *ifname, WakeOnLan wol);
 int ethtool_set_features(int *fd, const char *ifname, int *features);
 int ethtool_set_glinksettings(int *fd, const char *ifname, struct link_config *link);
@@ -96,7 +98,11 @@ WakeOnLan wol_from_string(const char *wol) _pure_;
 const char *port_to_string(NetDevPort port) _const_;
 NetDevPort port_from_string(const char *port) _pure_;
 
-int config_parse_duplex(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
-int config_parse_wol(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
-int config_parse_port(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
-int config_parse_channel(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
+const char *ethtool_link_mode_bit_to_string(enum ethtool_link_mode_bit_indices val) _const_;
+enum ethtool_link_mode_bit_indices ethtool_link_mode_bit_from_string(const char *str) _pure_;
+
+CONFIG_PARSER_PROTOTYPE(config_parse_duplex);
+CONFIG_PARSER_PROTOTYPE(config_parse_wol);
+CONFIG_PARSER_PROTOTYPE(config_parse_port);
+CONFIG_PARSER_PROTOTYPE(config_parse_channel);
+CONFIG_PARSER_PROTOTYPE(config_parse_advertise);

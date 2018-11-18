@@ -432,7 +432,6 @@ static int load_sysv(SysvStub *s) {
         _cleanup_free_ char *short_description = NULL, *long_description = NULL, *chkconfig_description = NULL;
         char *description;
         bool supports_reload = false;
-        char l[LINE_MAX];
 
         assert(s);
 
@@ -446,8 +445,15 @@ static int load_sysv(SysvStub *s) {
 
         log_debug("Loading SysV script %s", s->path);
 
-        FOREACH_LINE(l, f, goto fail) {
+        for (;;) {
+                _cleanup_free_ char *l = NULL;
                 char *t;
+
+                r = read_line(f, LONG_LINE_MAX, &l);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to read configuration file '%s': %m", s->path);
+                if (r == 0)
+                        break;
 
                 line++;
 
@@ -456,7 +462,7 @@ static int load_sysv(SysvStub *s) {
                         /* Try to figure out whether this init script supports
                          * the reload operation. This heuristic looks for
                          * "Usage" lines which include the reload option. */
-                        if ( state == USAGE_CONTINUATION ||
+                        if (state == USAGE_CONTINUATION ||
                             (state == NORMAL && strcasestr(t, "usage"))) {
                                 if (usage_contains_reload(t)) {
                                         supports_reload = true;
@@ -644,9 +650,6 @@ static int load_sysv(SysvStub *s) {
 
         s->loaded = true;
         return 0;
-
-fail:
-        return log_error_errno(errno, "Failed to read configuration file '%s': %m", s->path);
 }
 
 static int fix_order(SysvStub *s, Hashmap *all_services) {
@@ -713,7 +716,7 @@ static int acquire_search_path(const char *def, const char *envvar, char ***ret)
         if (strv_isempty(l)) {
                 strv_free(l);
 
-                l = strv_new(def, NULL);
+                l = strv_new(def);
                 if (!l)
                         return log_oom();
         }

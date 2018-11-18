@@ -471,7 +471,7 @@ int bind_remount_recursive_with_mountinfo(const char *prefix, bool ro, char **bl
 
                                         if (path_startswith(p, *i)) {
                                                 blacklisted = true;
-                                                log_debug("Not remounting %s, because blacklisted by %s, called for %s", p, *i, cleaned);
+                                                log_debug("Not remounting %s blacklisted by %s, called for %s", p, *i, cleaned);
                                                 break;
                                         }
                                 }
@@ -840,8 +840,8 @@ int mount_verbose(
                           strna(type), where, strnull(fl), strempty(o));
         if (mount(what, where, type, f, o) < 0)
                 return log_full_errno(error_log_level, errno,
-                                      "Failed to mount %s on %s (%s \"%s\"): %m",
-                                      strna(type), where, strnull(fl), strempty(o));
+                                      "Failed to mount %s (type %s) on %s (%s \"%s\"): %m",
+                                      strna(what), strna(type), where, strnull(fl), strempty(o));
         return 0;
 }
 
@@ -950,4 +950,47 @@ int mount_option_mangle(
         *ret_remaining_options = TAKE_PTR(ret);
 
         return 0;
+}
+
+int dev_is_devtmpfs(void) {
+        _cleanup_fclose_ FILE *proc_self_mountinfo = NULL;
+        int mount_id, r;
+        char *e;
+
+        r = path_get_mnt_id("/dev", &mount_id);
+        if (r < 0)
+                return r;
+
+        proc_self_mountinfo = fopen("/proc/self/mountinfo", "re");
+        if (!proc_self_mountinfo)
+                return -errno;
+
+        (void) __fsetlocking(proc_self_mountinfo, FSETLOCKING_BYCALLER);
+
+        for (;;) {
+                _cleanup_free_ char *line = NULL;
+                int mid;
+
+                r = read_line(proc_self_mountinfo, LONG_LINE_MAX, &line);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        break;
+
+                if (sscanf(line, "%i", &mid) != 1)
+                        continue;
+
+                if (mid != mount_id)
+                        continue;
+
+                e = strstr(line, " - ");
+                if (!e)
+                        continue;
+
+                /* accept any name that starts with the currently expected type */
+                if (startswith(e + 3, "devtmpfs"))
+                        return true;
+        }
+
+        return false;
 }

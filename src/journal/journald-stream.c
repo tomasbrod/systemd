@@ -610,7 +610,17 @@ static int stdout_stream_new(sd_event_source *es, int listen_fd, uint32_t revent
         }
 
         if (s->n_stdout_streams >= STDOUT_STREAMS_MAX) {
-                log_warning("Too many stdout streams, refusing connection.");
+                struct ucred u;
+
+                r = getpeercred(fd, &u);
+
+                /* By closing fd here we make sure that the client won't wait too long for journald to
+                 * gather all the data it adds to the error message to find out that the connection has
+                 * just been refused.
+                 */
+                fd = safe_close(fd);
+
+                server_driver_message(s, r < 0 ? 0 : u.pid, NULL, LOG_MESSAGE("Too many stdout streams, refusing connection."), NULL);
                 return 0;
         }
 
@@ -641,7 +651,7 @@ static int stdout_stream_load(StdoutStream *stream, const char *fname) {
                         return log_oom();
         }
 
-        r = parse_env_file(NULL, stream->state_file, NEWLINE,
+        r = parse_env_file(NULL, stream->state_file,
                            "PRIORITY", &priority,
                            "LEVEL_PREFIX", &level_prefix,
                            "FORWARD_TO_SYSLOG", &forward_to_syslog,
@@ -649,8 +659,7 @@ static int stdout_stream_load(StdoutStream *stream, const char *fname) {
                            "FORWARD_TO_CONSOLE", &forward_to_console,
                            "IDENTIFIER", &stream->identifier,
                            "UNIT", &stream->unit_id,
-                           "STREAM_ID", &stream_id,
-                           NULL);
+                           "STREAM_ID", &stream_id);
         if (r < 0)
                 return log_error_errno(r, "Failed to read: %s", stream->state_file);
 
@@ -793,7 +802,7 @@ int server_open_stdout_socket(Server *s) {
                 if (s->stdout_fd < 0)
                         return log_error_errno(errno, "socket() failed: %m");
 
-                (void) unlink(sa.un.sun_path);
+                (void) sockaddr_un_unlink(&sa.un);
 
                 r = bind(s->stdout_fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
                 if (r < 0)
@@ -804,7 +813,7 @@ int server_open_stdout_socket(Server *s) {
                 if (listen(s->stdout_fd, SOMAXCONN) < 0)
                         return log_error_errno(errno, "listen(%s) failed: %m", sa.un.sun_path);
         } else
-                fd_nonblock(s->stdout_fd, 1);
+                (void) fd_nonblock(s->stdout_fd, true);
 
         r = sd_event_add_io(s->event, &s->stdout_event_source, s->stdout_fd, EPOLLIN, stdout_stream_new, s);
         if (r < 0)

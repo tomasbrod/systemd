@@ -12,7 +12,6 @@
 #include "MurmurHash2.h"
 #include "device-nodes.h"
 #include "libudev-private.h"
-#include "syslog-util.h"
 #include "utf8.h"
 
 /**
@@ -23,9 +22,8 @@
  */
 
 /* handle "[<SUBSYSTEM>/<KERNEL>]<attribute>" format */
-int util_resolve_subsys_kernel(struct udev *udev, const char *string,
-                               char *result, size_t maxsize, int read_value)
-{
+int util_resolve_subsys_kernel(const char *string,
+                               char *result, size_t maxsize, int read_value) {
         char temp[UTIL_PATH_SIZE];
         char *subsys;
         char *sysname;
@@ -58,7 +56,7 @@ int util_resolve_subsys_kernel(struct udev *udev, const char *string,
         if (read_value && attr == NULL)
                 return -1;
 
-        dev = udev_device_new_from_subsystem_sysname(udev, subsys, sysname);
+        dev = udev_device_new_from_subsystem_sysname(NULL, subsys, sysname);
         if (dev == NULL)
                 return -1;
 
@@ -85,24 +83,7 @@ int util_resolve_subsys_kernel(struct udev *udev, const char *string,
         return 0;
 }
 
-int util_log_priority(const char *priority)
-{
-        char *endptr;
-        int prio;
-
-        prio = strtoul(priority, &endptr, 10);
-        if (endptr[0] == '\0' || isspace(endptr[0])) {
-                if (prio >= 0 && prio <= 7)
-                        return prio;
-                else
-                        return -ERANGE;
-        }
-
-        return log_level_from_string(priority);
-}
-
-size_t util_path_encode(const char *src, char *dest, size_t size)
-{
+size_t util_path_encode(const char *src, char *dest, size_t size) {
         size_t i, j;
 
         for (i = 0, j = 0; src[i] != '\0'; i++) {
@@ -147,8 +128,7 @@ size_t util_path_encode(const char *src, char *dest, size_t size)
  * Note this may be called with 'str' == 'to', i.e. to replace whitespace
  * in-place in a buffer.  This function can handle that situation.
  */
-int util_replace_whitespace(const char *str, char *to, size_t len)
-{
+int util_replace_whitespace(const char *str, char *to, size_t len) {
         size_t i, j;
 
         /* strip trailing whitespace */
@@ -176,8 +156,7 @@ int util_replace_whitespace(const char *str, char *to, size_t len)
 }
 
 /* allow chars in whitelist, plain ascii, hex-escaping and valid utf8 */
-int util_replace_chars(char *str, const char *white)
-{
+int util_replace_chars(char *str, const char *white) {
         size_t i = 0;
         int replaced = 0;
 
@@ -230,25 +209,6 @@ int util_replace_chars(char *str, const char *white)
  *
  * Returns: 0 if the entire string was copied, non-zero otherwise.
  **/
-_public_ int udev_util_encode_string(const char *str, char *str_enc, size_t len)
-{
+_public_ int udev_util_encode_string(const char *str, char *str_enc, size_t len) {
         return encode_devnode_name(str, str_enc, len);
-}
-
-unsigned int util_string_hash32(const char *str)
-{
-        return MurmurHash2(str, strlen(str), 0);
-}
-
-/* get a bunch of bit numbers out of the hash, and set the bits in our bit field */
-uint64_t util_string_bloom64(const char *str)
-{
-        uint64_t bits = 0;
-        unsigned int hash = util_string_hash32(str);
-
-        bits |= 1LLU << (hash & 63);
-        bits |= 1LLU << ((hash >> 6) & 63);
-        bits |= 1LLU << ((hash >> 12) & 63);
-        bits |= 1LLU << ((hash >> 18) & 63);
-        return bits;
 }

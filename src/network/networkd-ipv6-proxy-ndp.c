@@ -43,7 +43,7 @@ static int ipv6_proxy_ndp_set(Link *link) {
         v = ipv6_proxy_ndp_is_needed(link);
         p = strjoina("/proc/sys/net/ipv6/conf/", link->ifname, "/proxy_ndp");
 
-        r = write_string_file(p, one_zero(v), WRITE_STRING_FILE_VERIFY_ON_FAILURE);
+        r = write_string_file(p, one_zero(v), WRITE_STRING_FILE_VERIFY_ON_FAILURE | WRITE_STRING_FILE_DISABLE_BUFFER);
         if (r < 0)
                 log_link_warning_errno(link, r, "Cannot configure proxy NDP for interface: %m");
 
@@ -57,17 +57,18 @@ int ipv6_proxy_ndp_address_new_static(Network *network, IPv6ProxyNDPAddress **re
         assert(ret);
 
         /* allocate space for IPv6ProxyNDPAddress entry */
-        ipv6_proxy_ndp_address = new0(IPv6ProxyNDPAddress, 1);
+        ipv6_proxy_ndp_address = new(IPv6ProxyNDPAddress, 1);
         if (!ipv6_proxy_ndp_address)
                 return -ENOMEM;
 
-        ipv6_proxy_ndp_address->network = network;
+        *ipv6_proxy_ndp_address = (IPv6ProxyNDPAddress) {
+                .network = network,
+        };
 
         LIST_PREPEND(ipv6_proxy_ndp_addresses, network->ipv6_proxy_ndp_addresses, ipv6_proxy_ndp_address);
         network->n_ipv6_proxy_ndp_addresses++;
 
-        *ret = ipv6_proxy_ndp_address;
-        ipv6_proxy_ndp_address = NULL;
+        *ret = TAKE_PTR(ipv6_proxy_ndp_address);
 
         return 0;
 }
@@ -88,16 +89,16 @@ void ipv6_proxy_ndp_address_free(IPv6ProxyNDPAddress *ipv6_proxy_ndp_address) {
 }
 
 int config_parse_ipv6_proxy_ndp_address(
-        const char *unit,
-        const char *filename,
-        unsigned line,
-        const char *section,
-        unsigned section_line,
-        const char *lvalue,
-        int ltype,
-        const char *rvalue,
-        void *data,
-        void *userdata) {
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
 
         Network *network = userdata;
         _cleanup_(ipv6_proxy_ndp_address_freep) IPv6ProxyNDPAddress *ipv6_proxy_ndp_address = NULL;
@@ -173,9 +174,12 @@ int ipv6_proxy_ndp_address_configure(Link *link, IPv6ProxyNDPAddress *ipv6_proxy
         if (r < 0)
                 return rtnl_log_create_error(r);
 
-        r = sd_netlink_call_async(rtnl, req, set_ipv6_proxy_ndp_address_handler, link, 0, NULL);
+        r = sd_netlink_call_async(rtnl, NULL, req, set_ipv6_proxy_ndp_address_handler,
+                                  link_netlink_destroy_callback, link, 0, __func__);
         if (r < 0)
                 return log_link_error_errno(link, r, "Could not send rtnetlink message: %m");
+
+        link_ref(link);
 
         return 0;
 }

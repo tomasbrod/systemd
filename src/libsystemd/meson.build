@@ -7,7 +7,14 @@ id128_sources = files('''
 '''.split())
 
 sd_daemon_c = files('sd-daemon/sd-daemon.c')
-sd_event_c = files('sd-event/sd-event.c')
+
+sd_event_c = files('''
+        sd-event/event-source.h
+        sd-event/event-util.c
+        sd-event/event-util.h
+        sd-event/sd-event.c
+'''.split())
+
 sd_login_c = files('sd-login/sd-login.c')
 
 libsystemd_sources = files('''
@@ -53,11 +60,14 @@ libsystemd_sources = files('''
         sd-device/device-enumerator-private.h
         sd-device/device-enumerator.c
         sd-device/device-internal.h
+        sd-device/device-monitor-private.h
+        sd-device/device-monitor.c
         sd-device/device-private.c
         sd-device/device-private.h
         sd-device/device-util.h
         sd-device/sd-device.c
         sd-hwdb/hwdb-internal.h
+        sd-hwdb/hwdb-util.c
         sd-hwdb/hwdb-util.h
         sd-hwdb/sd-hwdb.c
         sd-netlink/generic-netlink.c
@@ -65,6 +75,8 @@ libsystemd_sources = files('''
         sd-netlink/local-addresses.h
         sd-netlink/netlink-internal.h
         sd-netlink/netlink-message.c
+        sd-netlink/netlink-slot.c
+        sd-netlink/netlink-slot.h
         sd-netlink/netlink-socket.c
         sd-netlink/netlink-types.c
         sd-netlink/netlink-types.h
@@ -79,6 +91,8 @@ libsystemd_sources = files('''
         sd-resolve/sd-resolve.c
         sd-utf8/sd-utf8.c
 '''.split()) + id128_sources + sd_daemon_c + sd_event_c + sd_login_c
+
+disable_mempool_c = files('disable-mempool.c')
 
 libsystemd_c_args = ['-fvisibility=default']
 

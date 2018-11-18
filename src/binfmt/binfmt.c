@@ -15,18 +15,20 @@
 #include "fileio.h"
 #include "log.h"
 #include "pager.h"
+#include "path-util.h"
 #include "string-util.h"
 #include "strv.h"
 #include "terminal-util.h"
 #include "util.h"
 
 static bool arg_cat_config = false;
-static bool arg_no_pager = false;
+static PagerFlags arg_pager_flags = 0;
 
 static int delete_rule(const char *rule) {
         _cleanup_free_ char *x = NULL, *fn = NULL;
         char *e;
 
+        assert(rule);
         assert(rule[0]);
 
         x = strdup(rule);
@@ -36,19 +38,24 @@ static int delete_rule(const char *rule) {
         e = strchrnul(x+1, x[0]);
         *e = 0;
 
+        if (!filename_is_valid(x + 1)) {
+                log_error("Rule file name '%s' is not valid, refusing.", x+1);
+                return -EINVAL;
+        }
+
         fn = strappend("/proc/sys/fs/binfmt_misc/", x+1);
         if (!fn)
                 return log_oom();
 
-        return write_string_file(fn, "-1", 0);
+        return write_string_file(fn, "-1", WRITE_STRING_FILE_DISABLE_BUFFER);
 }
 
 static int apply_rule(const char *rule) {
         int r;
 
-        delete_rule(rule);
+        (void) delete_rule(rule);
 
-        r = write_string_file("/proc/sys/fs/binfmt_misc/register", rule, 0);
+        r = write_string_file("/proc/sys/fs/binfmt_misc/register", rule, WRITE_STRING_FILE_DISABLE_BUFFER);
         if (r < 0)
                 return log_error_errno(r, "Failed to add binary format: %m");
 
@@ -66,25 +73,25 @@ static int apply_file(const char *path, bool ignore_enoent) {
                 if (ignore_enoent && r == -ENOENT)
                         return 0;
 
-                return log_error_errno(r, "Failed to open file '%s', ignoring: %m", path);
+                return log_error_errno(r, "Failed to open file '%s': %m", path);
         }
 
         log_debug("apply: %s", path);
         for (;;) {
-                char l[LINE_MAX], *p;
+                _cleanup_free_ char *line = NULL;
+                char *p;
                 int k;
 
-                if (!fgets(l, sizeof(l), f)) {
-                        if (feof(f))
-                                break;
+                k = read_line(f, LONG_LINE_MAX, &line);
+                if (k < 0)
+                        return log_error_errno(k, "Failed to read file '%s': %m", path);
+                if (k == 0)
+                        break;
 
-                        return log_error_errno(errno, "Failed to read file '%s', ignoring: %m", path);
-                }
-
-                p = strstrip(l);
-                if (!*p)
+                p = strstrip(line);
+                if (isempty(p))
                         continue;
-                if (strchr(COMMENTS "\n", *p))
+                if (strchr(COMMENTS, p[0]))
                         continue;
 
                 k = apply_rule(p);
@@ -153,7 +160,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_NO_PAGER:
-                        arg_no_pager = true;
+                        arg_pager_flags |= PAGER_DISABLE;
                         break;
 
                 case '?':
@@ -205,14 +212,14 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (arg_cat_config) {
-                        (void) pager_open(arg_no_pager, false);
+                        (void) pager_open(arg_pager_flags);
 
                         r = cat_files(NULL, files, 0);
                         goto finish;
                 }
 
                 /* Flush out all rules */
-                write_string_file("/proc/sys/fs/binfmt_misc/status", "-1", 0);
+                write_string_file("/proc/sys/fs/binfmt_misc/status", "-1", WRITE_STRING_FILE_DISABLE_BUFFER);
 
                 STRV_FOREACH(f, files) {
                         k = apply_file(*f, true);

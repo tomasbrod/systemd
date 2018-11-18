@@ -349,11 +349,8 @@ JournalFile* journal_file_close(JournalFile *f) {
 #endif
 
         if (f->post_change_timer) {
-                int enabled;
-
-                if (sd_event_source_get_enabled(f->post_change_timer, &enabled) >= 0)
-                        if (enabled == SD_EVENT_ONESHOT)
-                                journal_file_post_change(f);
+                if (sd_event_source_get_enabled(f->post_change_timer, NULL) > 0)
+                        journal_file_post_change(f);
 
                 (void) sd_event_source_set_enabled(f->post_change_timer, SD_EVENT_OFF);
                 sd_event_source_unref(f->post_change_timer);
@@ -372,7 +369,7 @@ JournalFile* journal_file_close(JournalFile *f) {
                  * reenable all the good bits COW usually provides
                  * (such as data checksumming). */
 
-                (void) chattr_fd(f->fd, 0, FS_NOCOW_FL);
+                (void) chattr_fd(f->fd, 0, FS_NOCOW_FL, NULL);
                 (void) btrfs_defrag_fd(f->fd);
         }
 
@@ -1846,6 +1843,9 @@ static int journal_file_append_entry_internal(
 void journal_file_post_change(JournalFile *f) {
         assert(f);
 
+        if (f->fd < 0)
+                return;
+
         /* inotify() does not receive IN_MODIFY events from file
          * accesses done via mmap(). After each access we hence
          * trigger IN_MODIFY by truncating the journal file to its
@@ -1866,37 +1866,33 @@ static int post_change_thunk(sd_event_source *timer, uint64_t usec, void *userda
 }
 
 static void schedule_post_change(JournalFile *f) {
-        sd_event_source *timer;
-        int enabled, r;
         uint64_t now;
+        int r;
 
         assert(f);
         assert(f->post_change_timer);
 
-        timer = f->post_change_timer;
-
-        r = sd_event_source_get_enabled(timer, &enabled);
+        r = sd_event_source_get_enabled(f->post_change_timer, NULL);
         if (r < 0) {
                 log_debug_errno(r, "Failed to get ftruncate timer state: %m");
                 goto fail;
         }
-
-        if (enabled == SD_EVENT_ONESHOT)
+        if (r > 0)
                 return;
 
-        r = sd_event_now(sd_event_source_get_event(timer), CLOCK_MONOTONIC, &now);
+        r = sd_event_now(sd_event_source_get_event(f->post_change_timer), CLOCK_MONOTONIC, &now);
         if (r < 0) {
                 log_debug_errno(r, "Failed to get clock's now for scheduling ftruncate: %m");
                 goto fail;
         }
 
-        r = sd_event_source_set_time(timer, now+f->post_change_timer_period);
+        r = sd_event_source_set_time(f->post_change_timer, now + f->post_change_timer_period);
         if (r < 0) {
                 log_debug_errno(r, "Failed to set time for scheduling ftruncate: %m");
                 goto fail;
         }
 
-        r = sd_event_source_set_enabled(timer, SD_EVENT_ONESHOT);
+        r = sd_event_source_set_enabled(f->post_change_timer, SD_EVENT_ONESHOT);
         if (r < 0) {
                 log_debug_errno(r, "Failed to enable scheduled ftruncate: %m");
                 goto fail;
@@ -1933,14 +1929,8 @@ int journal_file_enable_post_change_timer(JournalFile *f, sd_event *e, usec_t t)
         return r;
 }
 
-static int entry_item_cmp(const void *_a, const void *_b) {
-        const EntryItem *a = _a, *b = _b;
-
-        if (le64toh(a->object_offset) < le64toh(b->object_offset))
-                return -1;
-        if (le64toh(a->object_offset) > le64toh(b->object_offset))
-                return 1;
-        return 0;
+static int entry_item_cmp(const EntryItem *a, const EntryItem *b) {
+        return CMP(le64toh(a->object_offset), le64toh(b->object_offset));
 }
 
 int journal_file_append_entry(
@@ -1999,7 +1989,7 @@ int journal_file_append_entry(
 
         /* Order by the position on disk, in order to improve seek
          * times for rotating media. */
-        qsort_safe(items, n_iovec, sizeof(EntryItem), entry_item_cmp);
+        typesafe_qsort(items, n_iovec, entry_item_cmp);
 
         r = journal_file_append_entry_internal(f, ts, boot_id, xor_hash, items, n_iovec, seqnum, ret, offset);
 
@@ -2619,6 +2609,8 @@ void journal_file_save_location(JournalFile *f, Object *o, uint64_t offset) {
 }
 
 int journal_file_compare_locations(JournalFile *af, JournalFile *bf) {
+        int r;
+
         assert(af);
         assert(af->header);
         assert(bf);
@@ -2638,10 +2630,9 @@ int journal_file_compare_locations(JournalFile *af, JournalFile *bf) {
 
                 /* If this is from the same seqnum source, compare
                  * seqnums */
-                if (af->current_seqnum < bf->current_seqnum)
-                        return -1;
-                if (af->current_seqnum > bf->current_seqnum)
-                        return 1;
+                r = CMP(af->current_seqnum, bf->current_seqnum);
+                if (r != 0)
+                        return r;
 
                 /* Wow! This is weird, different data but the same
                  * seqnums? Something is borked, but let's make the
@@ -2651,25 +2642,18 @@ int journal_file_compare_locations(JournalFile *af, JournalFile *bf) {
         if (sd_id128_equal(af->current_boot_id, bf->current_boot_id)) {
 
                 /* If the boot id matches, compare monotonic time */
-                if (af->current_monotonic < bf->current_monotonic)
-                        return -1;
-                if (af->current_monotonic > bf->current_monotonic)
-                        return 1;
+                r = CMP(af->current_monotonic, bf->current_monotonic);
+                if (r != 0)
+                        return r;
         }
 
         /* Otherwise, compare UTC time */
-        if (af->current_realtime < bf->current_realtime)
-                return -1;
-        if (af->current_realtime > bf->current_realtime)
-                return 1;
+        r = CMP(af->current_realtime, bf->current_realtime);
+        if (r != 0)
+                return r;
 
         /* Finally, compare by contents */
-        if (af->current_xor_hash < bf->current_xor_hash)
-                return -1;
-        if (af->current_xor_hash > bf->current_xor_hash)
-                return 1;
-
-        return 0;
+        return CMP(af->current_xor_hash, bf->current_xor_hash);
 }
 
 static int bump_array_index(uint64_t *i, direction_t direction, uint64_t n) {
@@ -3233,30 +3217,30 @@ int journal_file_open(
         if (fname && (flags & O_CREAT) && !endswith(fname, ".journal"))
                 return -EINVAL;
 
-        f = new0(JournalFile, 1);
+        f = new(JournalFile, 1);
         if (!f)
                 return -ENOMEM;
 
-        f->fd = fd;
-        f->mode = mode;
+        *f = (JournalFile) {
+                .fd = fd,
+                .mode = mode,
 
-        f->flags = flags;
-        f->prot = prot_from_flags(flags);
-        f->writable = (flags & O_ACCMODE) != O_RDONLY;
+                .flags = flags,
+                .prot = prot_from_flags(flags),
+                .writable = (flags & O_ACCMODE) != O_RDONLY,
+
 #if HAVE_LZ4
-        f->compress_lz4 = compress;
+                .compress_lz4 = compress,
 #elif HAVE_XZ
-        f->compress_xz = compress;
+                .compress_xz = compress,
 #endif
-
-        if (compress_threshold_bytes == (uint64_t) -1)
-                f->compress_threshold_bytes = DEFAULT_COMPRESS_THRESHOLD;
-        else
-                f->compress_threshold_bytes = MAX(MIN_COMPRESS_THRESHOLD, compress_threshold_bytes);
-
+                .compress_threshold_bytes = compress_threshold_bytes == (uint64_t) -1 ?
+                                            DEFAULT_COMPRESS_THRESHOLD :
+                                            MAX(MIN_COMPRESS_THRESHOLD, compress_threshold_bytes),
 #if HAVE_GCRYPT
-        f->seal = seal;
+                .seal = seal,
 #endif
+        };
 
         log_debug("Journal effective settings seal=%s compress=%s compress_threshold_bytes=%s",
                   yes_no(f->seal), yes_no(JOURNAL_FILE_COMPRESS(f)),
@@ -3446,72 +3430,143 @@ fail:
         return r;
 }
 
-int journal_file_rotate(JournalFile **f, bool compress, uint64_t compress_threshold_bytes, bool seal, Set *deferred_closes) {
+int journal_file_archive(JournalFile *f) {
         _cleanup_free_ char *p = NULL;
-        size_t l;
-        JournalFile *old_file, *new_file = NULL;
+
+        assert(f);
+
+        if (!f->writable)
+                return -EINVAL;
+
+        /* Is this a journal file that was passed to us as fd? If so, we synthesized a path name for it, and we refuse
+         * rotation, since we don't know the actual path, and couldn't rename the file hence. */
+        if (path_startswith(f->path, "/proc/self/fd"))
+                return -EINVAL;
+
+        if (!endswith(f->path, ".journal"))
+                return -EINVAL;
+
+        if (asprintf(&p, "%.*s@" SD_ID128_FORMAT_STR "-%016"PRIx64"-%016"PRIx64".journal",
+                     (int) strlen(f->path) - 8, f->path,
+                     SD_ID128_FORMAT_VAL(f->header->seqnum_id),
+                     le64toh(f->header->head_entry_seqnum),
+                     le64toh(f->header->head_entry_realtime)) < 0)
+                return -ENOMEM;
+
+        /* Try to rename the file to the archived version. If the file already was deleted, we'll get ENOENT, let's
+         * ignore that case. */
+        if (rename(f->path, p) < 0 && errno != ENOENT)
+                return -errno;
+
+        /* Sync the rename to disk */
+        (void) fsync_directory_of_file(f->fd);
+
+        /* Set as archive so offlining commits w/state=STATE_ARCHIVED. Previously we would set old_file->header->state
+         * to STATE_ARCHIVED directly here, but journal_file_set_offline() short-circuits when state != STATE_ONLINE,
+         * which would result in the rotated journal never getting fsync() called before closing.  Now we simply queue
+         * the archive state by setting an archive bit, leaving the state as STATE_ONLINE so proper offlining
+         * occurs. */
+        f->archive = true;
+
+        /* Currently, btrfs is not very good with out write patterns and fragments heavily. Let's defrag our journal
+         * files when we archive them */
+        f->defrag_on_close = true;
+
+        return 0;
+}
+
+JournalFile* journal_initiate_close(
+                JournalFile *f,
+                Set *deferred_closes) {
+
+        int r;
+
+        assert(f);
+
+        if (deferred_closes) {
+
+                r = set_put(deferred_closes, f);
+                if (r < 0)
+                        log_debug_errno(r, "Failed to add file to deferred close set, closing immediately.");
+                else {
+                        (void) journal_file_set_offline(f, false);
+                        return NULL;
+                }
+        }
+
+        return journal_file_close(f);
+}
+
+int journal_file_rotate(
+                JournalFile **f,
+                bool compress,
+                uint64_t compress_threshold_bytes,
+                bool seal,
+                Set *deferred_closes) {
+
+        JournalFile *new_file = NULL;
         int r;
 
         assert(f);
         assert(*f);
 
-        old_file = *f;
-
-        if (!old_file->writable)
-                return -EINVAL;
-
-        /* Is this a journal file that was passed to us as fd? If so, we synthesized a path name for it, and we refuse
-         * rotation, since we don't know the actual path, and couldn't rename the file hence. */
-        if (path_startswith(old_file->path, "/proc/self/fd"))
-                return -EINVAL;
-
-        if (!endswith(old_file->path, ".journal"))
-                return -EINVAL;
-
-        l = strlen(old_file->path);
-        r = asprintf(&p, "%.*s@" SD_ID128_FORMAT_STR "-%016"PRIx64"-%016"PRIx64".journal",
-                     (int) l - 8, old_file->path,
-                     SD_ID128_FORMAT_VAL(old_file->header->seqnum_id),
-                     le64toh((*f)->header->head_entry_seqnum),
-                     le64toh((*f)->header->head_entry_realtime));
+        r = journal_file_archive(*f);
         if (r < 0)
+                return r;
+
+        r = journal_file_open(
+                        -1,
+                        (*f)->path,
+                        (*f)->flags,
+                        (*f)->mode,
+                        compress,
+                        compress_threshold_bytes,
+                        seal,
+                        NULL,            /* metrics */
+                        (*f)->mmap,
+                        deferred_closes,
+                        *f,              /* template */
+                        &new_file);
+
+        journal_initiate_close(*f, deferred_closes);
+        *f = new_file;
+
+        return r;
+}
+
+int journal_file_dispose(int dir_fd, const char *fname) {
+        _cleanup_free_ char *p = NULL;
+        _cleanup_close_ int fd = -1;
+
+        assert(fname);
+
+        /* Renames a journal file to *.journal~, i.e. to mark it as corruped or otherwise uncleanly shutdown. Note that
+         * this is done without looking into the file or changing any of its contents. The idea is that this is called
+         * whenever something is suspicious and we want to move the file away and make clear that it is not accessed
+         * for writing anymore. */
+
+        if (!endswith(fname, ".journal"))
+                return -EINVAL;
+
+        if (asprintf(&p, "%.*s@%016" PRIx64 "-%016" PRIx64 ".journal~",
+                     (int) strlen(fname) - 8, fname,
+                     now(CLOCK_REALTIME),
+                     random_u64()) < 0)
                 return -ENOMEM;
 
-        /* Try to rename the file to the archived version. If the file
-         * already was deleted, we'll get ENOENT, let's ignore that
-         * case. */
-        r = rename(old_file->path, p);
-        if (r < 0 && errno != ENOENT)
+        if (renameat(dir_fd, fname, dir_fd, p) < 0)
                 return -errno;
 
-        /* Sync the rename to disk */
-        (void) fsync_directory_of_file(old_file->fd);
+        /* btrfs doesn't cope well with our write pattern and fragments heavily. Let's defrag all files we rotate */
+        fd = openat(dir_fd, p, O_RDONLY|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW);
+        if (fd < 0)
+                log_debug_errno(errno, "Failed to open file for defragmentation/FS_NOCOW_FL, ignoring: %m");
+        else {
+                (void) chattr_fd(fd, 0, FS_NOCOW_FL, NULL);
+                (void) btrfs_defrag_fd(fd);
+        }
 
-        /* Set as archive so offlining commits w/state=STATE_ARCHIVED.
-         * Previously we would set old_file->header->state to STATE_ARCHIVED directly here,
-         * but journal_file_set_offline() short-circuits when state != STATE_ONLINE, which
-         * would result in the rotated journal never getting fsync() called before closing.
-         * Now we simply queue the archive state by setting an archive bit, leaving the state
-         * as STATE_ONLINE so proper offlining occurs. */
-        old_file->archive = true;
-
-        /* Currently, btrfs is not very good with out write patterns
-         * and fragments heavily. Let's defrag our journal files when
-         * we archive them */
-        old_file->defrag_on_close = true;
-
-        r = journal_file_open(-1, old_file->path, old_file->flags, old_file->mode, compress,
-                              compress_threshold_bytes, seal, NULL, old_file->mmap, deferred_closes,
-                              old_file, &new_file);
-
-        if (deferred_closes &&
-            set_put(deferred_closes, old_file) >= 0)
-                (void) journal_file_set_offline(old_file, false);
-        else
-                (void) journal_file_close(old_file);
-
-        *f = new_file;
-        return r;
+        return 0;
 }
 
 int journal_file_open_reliably(
@@ -3528,8 +3583,6 @@ int journal_file_open_reliably(
                 JournalFile **ret) {
 
         int r;
-        size_t l;
-        _cleanup_free_ char *p = NULL;
 
         r = journal_file_open(-1, fname, flags, mode, compress, compress_threshold_bytes, seal, metrics, mmap_cache,
                               deferred_closes, template, ret);
@@ -3555,24 +3608,11 @@ int journal_file_open_reliably(
                 return r;
 
         /* The file is corrupted. Rotate it away and try it again (but only once) */
-
-        l = strlen(fname);
-        if (asprintf(&p, "%.*s@%016"PRIx64 "-%016"PRIx64 ".journal~",
-                     (int) l - 8, fname,
-                     now(CLOCK_REALTIME),
-                     random_u64()) < 0)
-                return -ENOMEM;
-
-        if (rename(fname, p) < 0)
-                return -errno;
-
-        /* btrfs doesn't cope well with our write pattern and
-         * fragments heavily. Let's defrag all files we rotate */
-
-        (void) chattr_path(p, 0, FS_NOCOW_FL);
-        (void) btrfs_defrag(p);
-
         log_warning_errno(r, "File %s corrupted or uncleanly shut down, renaming and replacing.", fname);
+
+        r = journal_file_dispose(AT_FDCWD, fname);
+        if (r < 0)
+                return r;
 
         return journal_file_open(-1, fname, flags, mode, compress, compress_threshold_bytes, seal, metrics, mmap_cache,
                                  deferred_closes, template, ret);

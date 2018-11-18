@@ -367,7 +367,10 @@ const char *special_glyph(SpecialGlyph code) {
                         [BLACK_CIRCLE]       = "*",
                         [ARROW]              = "->",
                         [MDASH]              = "-",
-                        [ELLIPSIS]           = "..."
+                        [ELLIPSIS]           = "...",
+                        [MU]                 = "u",
+                        [CHECK_MARK]         = "+",
+                        [CROSS_MARK]         = "-",
                 },
 
                 /* UTF-8 */
@@ -381,10 +384,23 @@ const char *special_glyph(SpecialGlyph code) {
                         [ARROW]              = "\342\206\222",             /* → */
                         [MDASH]              = "\342\200\223",             /* – */
                         [ELLIPSIS]           = "\342\200\246",             /* … */
+                        [MU]                 = "\316\274",                 /* μ */
+                        [CHECK_MARK]         = "\342\234\223",             /* ✓ */
+                        [CROSS_MARK]         = "\342\234\227",             /* ✗ */
                 },
         };
 
         return draw_table[is_locale_utf8()][code];
+}
+
+void locale_variables_free(char*l[_VARIABLE_LC_MAX]) {
+        LocaleVariable i;
+
+        if (!l)
+                return;
+
+        for (i = 0; i < _VARIABLE_LC_MAX; i++)
+                l[i] = mfree(l[i]);
 }
 
 static const char * const locale_variable_table[_VARIABLE_LC_MAX] = {

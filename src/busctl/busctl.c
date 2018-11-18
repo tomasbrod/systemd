@@ -15,6 +15,7 @@
 #include "escape.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "json.h"
 #include "locale-util.h"
 #include "log.h"
 #include "pager.h"
@@ -27,7 +28,12 @@
 #include "util.h"
 #include "verbs.h"
 
-static bool arg_no_pager = false;
+static enum {
+        JSON_OFF,
+        JSON_SHORT,
+        JSON_PRETTY,
+} arg_json = JSON_OFF;
+static PagerFlags arg_pager_flags = 0;
 static bool arg_legend = true;
 static const char *arg_address = NULL;
 static bool arg_unique = false;
@@ -149,7 +155,7 @@ static int list_bus_names(int argc, char **argv, void *userdata) {
         if (r < 0)
                 return log_error_errno(r, "Failed to list names: %m");
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         names = hashmap_new(&string_hash_ops);
         if (!names)
@@ -464,7 +470,7 @@ static int tree_one(sd_bus *bus, const char *service, const char *prefix, bool m
                 p = NULL;
         }
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         l = set_get_strv(done);
         if (!l)
@@ -498,7 +504,7 @@ static int tree(int argc, char **argv, void *userdata) {
                 if (r < 0)
                         return log_error_errno(r, "Failed to get name list: %m");
 
-                (void) pager_open(arg_no_pager, false);
+                (void) pager_open(arg_pager_flags);
 
                 STRV_FOREACH(i, names) {
                         int q;
@@ -528,7 +534,7 @@ static int tree(int argc, char **argv, void *userdata) {
                                 printf("\n");
 
                         if (argv[2]) {
-                                (void) pager_open(arg_no_pager, false);
+                                (void) pager_open(arg_pager_flags);
                                 printf("Service %s%s%s:\n", ansi_highlight(), *i, ansi_normal());
                         }
 
@@ -719,8 +725,7 @@ static void member_hash_func(const void *p, struct siphash *state) {
                 string_hash_func(m->interface, state);
 }
 
-static int member_compare_func(const void *a, const void *b) {
-        const Member *x = a, *y = b;
+static int member_compare_func(const Member *x, const Member *y) {
         int d;
 
         assert(x);
@@ -739,10 +744,8 @@ static int member_compare_func(const void *a, const void *b) {
         return strcmp_ptr(x->name, y->name);
 }
 
-static int member_compare_funcp(const void *a, const void *b) {
-        const Member *const * x = (const Member *const *) a, * const *y = (const Member *const *) b;
-
-        return member_compare_func(*x, *y);
+static int member_compare_funcp(Member * const *a, Member * const *b) {
+        return member_compare_func(*a, *b);
 }
 
 static void member_free(Member *m) {
@@ -913,7 +916,7 @@ static int on_property(const char *interface, const char *name, const char *sign
 static int introspect(int argc, char **argv, void *userdata) {
         static const struct hash_ops member_hash_ops = {
                 .hash = member_hash_func,
-                .compare = member_compare_func,
+                .compare = (__compar_fn_t) member_compare_func,
         };
 
         static const XMLIntrospectOps ops = {
@@ -1030,7 +1033,7 @@ static int introspect(int argc, char **argv, void *userdata) {
                         return bus_log_parse_error(r);
         }
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         name_width = STRLEN("NAME");
         type_width = STRLEN("TYPE");
@@ -1063,7 +1066,7 @@ static int introspect(int argc, char **argv, void *userdata) {
         if (result_width > 40)
                 result_width = 40;
 
-        qsort(sorted, k, sizeof(Member*), member_compare_funcp);
+        typesafe_qsort(sorted, k, member_compare_funcp);
 
         if (arg_legend) {
                 printf("%-*s %-*s %-*s %-*s %s\n",
@@ -1353,7 +1356,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = parse_boolean(v);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as boolean: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as boolean: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &r);
                         break;
@@ -1363,7 +1366,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou8(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as byte (unsigned 8bit integer): %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as byte (unsigned 8bit integer): %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1374,7 +1377,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atoi16(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as signed 16bit integer: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as signed 16bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1385,7 +1388,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou16(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as unsigned 16bit integer: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as unsigned 16bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1396,7 +1399,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atoi32(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as signed 32bit integer: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as signed 32bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1407,7 +1410,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou32(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as unsigned 32bit integer: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as unsigned 32bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1418,7 +1421,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atoi64(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as signed 64bit integer: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as signed 64bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1429,7 +1432,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou64(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as unsigned 64bit integer: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as unsigned 64bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1440,7 +1443,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atod(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse as double precision floating point: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' as double precision floating point: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1459,11 +1462,11 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou32(v, &n);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse number of array entries: %s", v);
+                                return log_error_errno(r, "Failed to parse '%s' number of array entries: %m", v);
 
                         r = signature_element_length(signature, &k);
                         if (r < 0)
-                                return log_error_errno(r, "Invalid array signature.");
+                                return log_error_errno(r, "Invalid array signature: %m");
 
                         {
                                 unsigned i;
@@ -1509,7 +1512,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = signature_element_length(signature, &k);
                         if (r < 0)
-                                return log_error_errno(r, "Invalid struct/dict entry signature.");
+                                return log_error_errno(r, "Invalid struct/dict entry signature: %m");
 
                         {
                                 char s[k-1];
@@ -1546,6 +1549,359 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
         *x = p;
         return 0;
+}
+
+static int json_transform_one(sd_bus_message *m, JsonVariant **ret);
+
+static int json_transform_array_or_struct(sd_bus_message *m, JsonVariant **ret) {
+        size_t n_elements = 0, n_allocated = 0;
+        JsonVariant **elements = NULL;
+        int r;
+
+        assert(m);
+        assert(ret);
+
+        for (;;) {
+                r = sd_bus_message_at_end(m, false);
+                if (r < 0) {
+                        bus_log_parse_error(r);
+                        goto finish;
+                }
+                if (r > 0)
+                        break;
+
+                if (!GREEDY_REALLOC(elements, n_allocated, n_elements + 1)) {
+                        r = log_oom();
+                        goto finish;
+                }
+
+                r = json_transform_one(m, elements + n_elements);
+                if (r < 0)
+                        goto finish;
+
+                n_elements++;
+        }
+
+        r = json_variant_new_array(ret, elements, n_elements);
+
+finish:
+        json_variant_unref_many(elements, n_elements);
+        free(elements);
+
+        return r;
+}
+
+static int json_transform_variant(sd_bus_message *m, const char *contents, JsonVariant **ret) {
+        _cleanup_(json_variant_unrefp) JsonVariant *value = NULL;
+        int r;
+
+        assert(m);
+        assert(contents);
+        assert(ret);
+
+        r = json_transform_one(m, &value);
+        if (r < 0)
+                return r;
+
+        r = json_build(ret, JSON_BUILD_OBJECT(JSON_BUILD_PAIR("type", JSON_BUILD_STRING(contents)),
+                                              JSON_BUILD_PAIR("data", JSON_BUILD_VARIANT(value))));
+        if (r < 0)
+                return log_oom();
+
+        return r;
+}
+
+static int json_transform_dict_array(sd_bus_message *m, JsonVariant **ret) {
+        size_t n_elements = 0, n_allocated = 0;
+        JsonVariant **elements = NULL;
+        int r;
+
+        assert(m);
+        assert(ret);
+
+        for (;;) {
+                const char *contents;
+                char type;
+
+                r = sd_bus_message_at_end(m, false);
+                if (r < 0) {
+                        bus_log_parse_error(r);
+                        goto finish;
+                }
+                if (r > 0)
+                        break;
+
+                r = sd_bus_message_peek_type(m, &type, &contents);
+                if (r < 0)
+                        return r;
+
+                assert(type == 'e');
+
+                if (!GREEDY_REALLOC(elements, n_allocated, n_elements + 2)) {
+                        r = log_oom();
+                        goto finish;
+                }
+
+                r = sd_bus_message_enter_container(m, type, contents);
+                if (r < 0) {
+                        bus_log_parse_error(r);
+                        goto finish;
+                }
+
+                r = json_transform_one(m, elements + n_elements);
+                if (r < 0)
+                        goto finish;
+
+                n_elements++;
+
+                r = json_transform_one(m, elements + n_elements);
+                if (r < 0)
+                        goto finish;
+
+                n_elements++;
+
+                r = sd_bus_message_exit_container(m);
+                if (r < 0) {
+                        bus_log_parse_error(r);
+                        goto finish;
+                }
+        }
+
+        r = json_variant_new_object(ret, elements, n_elements);
+
+finish:
+        json_variant_unref_many(elements, n_elements);
+        free(elements);
+
+        return r;
+}
+
+static int json_transform_one(sd_bus_message *m, JsonVariant **ret) {
+        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+        const char *contents;
+        char type;
+        int r;
+
+        assert(m);
+        assert(ret);
+
+        r = sd_bus_message_peek_type(m, &type, &contents);
+        if (r < 0)
+                return bus_log_parse_error(r);
+
+        switch (type) {
+
+        case SD_BUS_TYPE_BYTE: {
+                uint8_t b;
+
+                r = sd_bus_message_read_basic(m, type, &b);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_unsigned(&v, b);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform byte: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_BOOLEAN: {
+                int b;
+
+                r = sd_bus_message_read_basic(m, type, &b);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_boolean(&v, b);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform boolean: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_INT16: {
+                int16_t b;
+
+                r = sd_bus_message_read_basic(m, type, &b);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_integer(&v, b);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform int16: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_UINT16: {
+                uint16_t b;
+
+                r = sd_bus_message_read_basic(m, type, &b);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_unsigned(&v, b);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform uint16: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_INT32: {
+                int32_t b;
+
+                r = sd_bus_message_read_basic(m, type, &b);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_integer(&v, b);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform int32: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_UINT32: {
+                uint32_t b;
+
+                r = sd_bus_message_read_basic(m, type, &b);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_unsigned(&v, b);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform uint32: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_INT64: {
+                int64_t b;
+
+                r = sd_bus_message_read_basic(m, type, &b);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_integer(&v, b);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform int64: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_UINT64: {
+                uint64_t b;
+
+                r = sd_bus_message_read_basic(m, type, &b);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_unsigned(&v, b);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform uint64: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_DOUBLE: {
+                double d;
+
+                r = sd_bus_message_read_basic(m, type, &d);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_real(&v, d);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform double: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_STRING:
+        case SD_BUS_TYPE_OBJECT_PATH:
+        case SD_BUS_TYPE_SIGNATURE: {
+                const char *s;
+
+                r = sd_bus_message_read_basic(m, type, &s);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_string(&v, s);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform double: %m");
+
+                break;
+        }
+
+        case SD_BUS_TYPE_UNIX_FD:
+                r = sd_bus_message_read_basic(m, type, NULL);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                r = json_variant_new_null(&v);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to transform fd: %m");
+
+                break;
+
+        case SD_BUS_TYPE_ARRAY:
+        case SD_BUS_TYPE_VARIANT:
+        case SD_BUS_TYPE_STRUCT:
+                r = sd_bus_message_enter_container(m, type, contents);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                if (type == SD_BUS_TYPE_VARIANT)
+                        r = json_transform_variant(m, contents, &v);
+                else if (type == SD_BUS_TYPE_ARRAY && contents[0] == '{')
+                        r = json_transform_dict_array(m, &v);
+                else
+                        r = json_transform_array_or_struct(m, &v);
+                if (r < 0)
+                        return r;
+
+                r = sd_bus_message_exit_container(m);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                break;
+
+        default:
+                assert_not_reached("Unexpected element type");
+        }
+
+        *ret = TAKE_PTR(v);
+        return 0;
+}
+
+static int json_transform_message(sd_bus_message *m, JsonVariant **ret) {
+        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+        const char *type;
+        int r;
+
+        assert(m);
+        assert(ret);
+
+        assert_se(type = sd_bus_message_get_signature(m, false));
+
+        r = json_transform_array_or_struct(m, &v);
+        if (r < 0)
+                return r;
+
+        r = json_build(ret, JSON_BUILD_OBJECT(JSON_BUILD_PAIR("type",  JSON_BUILD_STRING(type)),
+                                              JSON_BUILD_PAIR("data", JSON_BUILD_VARIANT(v))));
+        if (r < 0)
+                return log_oom();
+
+        return 0;
+}
+
+static void json_dump_with_flags(JsonVariant *v, FILE *f) {
+
+        json_variant_dump(v,
+                          (arg_json == JSON_PRETTY ? JSON_FORMAT_PRETTY : JSON_FORMAT_NEWLINE) |
+                          colors_enabled() * JSON_FORMAT_COLOR,
+                          f, NULL);
 }
 
 static int call(int argc, char **argv, void *userdata) {
@@ -1607,8 +1963,20 @@ static int call(int argc, char **argv, void *userdata) {
 
         if (r == 0 && !arg_quiet) {
 
-                if (arg_verbose) {
-                        (void) pager_open(arg_no_pager, false);
+                if (arg_json != JSON_OFF) {
+                        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+
+                        if (arg_json != JSON_SHORT)
+                                (void) pager_open(arg_pager_flags);
+
+                        r = json_transform_message(reply, &v);
+                        if (r < 0)
+                                return r;
+
+                        json_dump_with_flags(v, stdout);
+
+                } else if (arg_verbose) {
+                        (void) pager_open(arg_pager_flags);
 
                         r = bus_message_dump(reply, stdout, 0);
                         if (r < 0)
@@ -1656,8 +2024,20 @@ static int get_property(int argc, char **argv, void *userdata) {
                 if (r < 0)
                         return bus_log_parse_error(r);
 
-                if (arg_verbose)  {
-                        (void) pager_open(arg_no_pager, false);
+                if (arg_json != JSON_OFF) {
+                        _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+
+                        if (arg_json != JSON_SHORT)
+                                (void) pager_open(arg_pager_flags);
+
+                        r = json_transform_variant(reply, contents, &v);
+                        if (r < 0)
+                                return r;
+
+                        json_dump_with_flags(v, stdout);
+
+                } else if (arg_verbose)  {
+                        (void) pager_open(arg_pager_flags);
 
                         r = bus_message_dump(reply, stdout, BUS_MESSAGE_DUMP_SUBTREE_ONLY);
                         if (r < 0)
@@ -1753,6 +2133,8 @@ static int help(void) {
                "     --list               Don't show tree, but simple object path list\n"
                "  -q --quiet              Don't show method call reply\n"
                "     --verbose            Show result values in long format\n"
+               "     --json=MODE          Output as JSON\n"
+               "  -j                      Same as --json=pretty on tty, --json=short otherwise\n"
                "     --expect-reply=BOOL  Expect a method call reply\n"
                "     --auto-start=BOOL    Auto-start destination service\n"
                "     --allow-interactive-authorization=BOOL\n"
@@ -1810,33 +2192,35 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_TIMEOUT,
                 ARG_AUGMENT_CREDS,
                 ARG_WATCH_BIND,
+                ARG_JSON,
         };
 
         static const struct option options[] = {
-                { "help",         no_argument,       NULL, 'h'              },
-                { "version",      no_argument,       NULL, ARG_VERSION      },
-                { "no-pager",     no_argument,       NULL, ARG_NO_PAGER     },
-                { "no-legend",    no_argument,       NULL, ARG_NO_LEGEND    },
-                { "system",       no_argument,       NULL, ARG_SYSTEM       },
-                { "user",         no_argument,       NULL, ARG_USER         },
-                { "address",      required_argument, NULL, ARG_ADDRESS      },
-                { "show-machine", no_argument,       NULL, ARG_SHOW_MACHINE },
-                { "unique",       no_argument,       NULL, ARG_UNIQUE       },
-                { "acquired",     no_argument,       NULL, ARG_ACQUIRED     },
-                { "activatable",  no_argument,       NULL, ARG_ACTIVATABLE  },
-                { "match",        required_argument, NULL, ARG_MATCH        },
-                { "host",         required_argument, NULL, 'H'              },
-                { "machine",      required_argument, NULL, 'M'              },
-                { "size",         required_argument, NULL, ARG_SIZE         },
-                { "list",         no_argument,       NULL, ARG_LIST         },
-                { "quiet",        no_argument,       NULL, 'q'              },
-                { "verbose",      no_argument,       NULL, ARG_VERBOSE      },
-                { "expect-reply", required_argument, NULL, ARG_EXPECT_REPLY },
-                { "auto-start",   required_argument, NULL, ARG_AUTO_START   },
+                { "help",                            no_argument,       NULL, 'h'                                 },
+                { "version",                         no_argument,       NULL, ARG_VERSION                         },
+                { "no-pager",                        no_argument,       NULL, ARG_NO_PAGER                        },
+                { "no-legend",                       no_argument,       NULL, ARG_NO_LEGEND                       },
+                { "system",                          no_argument,       NULL, ARG_SYSTEM                          },
+                { "user",                            no_argument,       NULL, ARG_USER                            },
+                { "address",                         required_argument, NULL, ARG_ADDRESS                         },
+                { "show-machine",                    no_argument,       NULL, ARG_SHOW_MACHINE                    },
+                { "unique",                          no_argument,       NULL, ARG_UNIQUE                          },
+                { "acquired",                        no_argument,       NULL, ARG_ACQUIRED                        },
+                { "activatable",                     no_argument,       NULL, ARG_ACTIVATABLE                     },
+                { "match",                           required_argument, NULL, ARG_MATCH                           },
+                { "host",                            required_argument, NULL, 'H'                                 },
+                { "machine",                         required_argument, NULL, 'M'                                 },
+                { "size",                            required_argument, NULL, ARG_SIZE                            },
+                { "list",                            no_argument,       NULL, ARG_LIST                            },
+                { "quiet",                           no_argument,       NULL, 'q'                                 },
+                { "verbose",                         no_argument,       NULL, ARG_VERBOSE                         },
+                { "expect-reply",                    required_argument, NULL, ARG_EXPECT_REPLY                    },
+                { "auto-start",                      required_argument, NULL, ARG_AUTO_START                      },
                 { "allow-interactive-authorization", required_argument, NULL, ARG_ALLOW_INTERACTIVE_AUTHORIZATION },
-                { "timeout",      required_argument, NULL, ARG_TIMEOUT      },
-                { "augment-creds",required_argument, NULL, ARG_AUGMENT_CREDS},
-                { "watch-bind",   required_argument, NULL, ARG_WATCH_BIND   },
+                { "timeout",                         required_argument, NULL, ARG_TIMEOUT                         },
+                { "augment-creds",                   required_argument, NULL, ARG_AUGMENT_CREDS                   },
+                { "watch-bind",                      required_argument, NULL, ARG_WATCH_BIND                      },
+                { "json",                            required_argument, NULL, ARG_JSON                            },
                 {},
         };
 
@@ -1845,7 +2229,7 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
 
-        while ((c = getopt_long(argc, argv, "hH:M:q", options, NULL)) >= 0)
+        while ((c = getopt_long(argc, argv, "hH:M:qj", options, NULL)) >= 0)
 
                 switch (c) {
 
@@ -1856,7 +2240,7 @@ static int parse_argv(int argc, char *argv[]) {
                         return version();
 
                 case ARG_NO_PAGER:
-                        arg_no_pager = true;
+                        arg_pager_flags |= PAGER_DISABLE;
                         break;
 
                 case ARG_NO_LEGEND:
@@ -1901,7 +2285,7 @@ static int parse_argv(int argc, char *argv[]) {
 
                         r = parse_size(optarg, 1024, &sz);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse size: %s", optarg);
+                                return log_error_errno(r, "Failed to parse size '%s': %m", optarg);
 
                         if ((uint64_t) (size_t) sz !=  sz) {
                                 log_error("Size out of range.");
@@ -1937,7 +2321,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_EXPECT_REPLY:
                         r = parse_boolean(optarg);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse --expect-reply= parameter: %s", optarg);
+                                return log_error_errno(r, "Failed to parse --expect-reply= parameter '%s': %m", optarg);
 
                         arg_expect_reply = r;
                         break;
@@ -1945,7 +2329,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_AUTO_START:
                         r = parse_boolean(optarg);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse --auto-start= parameter: %s", optarg);
+                                return log_error_errno(r, "Failed to parse --auto-start= parameter '%s': %m", optarg);
 
                         arg_auto_start = r;
                         break;
@@ -1953,7 +2337,7 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_ALLOW_INTERACTIVE_AUTHORIZATION:
                         r = parse_boolean(optarg);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse --allow-interactive-authorization= parameter: %s", optarg);
+                                return log_error_errno(r, "Failed to parse --allow-interactive-authorization= parameter '%s': %m", optarg);
 
                         arg_allow_interactive_authorization = r;
                         break;
@@ -1961,14 +2345,14 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_TIMEOUT:
                         r = parse_sec(optarg, &arg_timeout);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse --timeout= parameter: %s", optarg);
+                                return log_error_errno(r, "Failed to parse --timeout= parameter '%s': %m", optarg);
 
                         break;
 
                 case ARG_AUGMENT_CREDS:
                         r = parse_boolean(optarg);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse --augment-creds= parameter: %s", optarg);
+                                return log_error_errno(r, "Failed to parse --augment-creds= parameter '%s': %m", optarg);
 
                         arg_augment_creds = r;
                         break;
@@ -1976,9 +2360,32 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_WATCH_BIND:
                         r = parse_boolean(optarg);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse --watch-bind= parameter: %s", optarg);
+                                return log_error_errno(r, "Failed to parse --watch-bind= parameter '%s': %m", optarg);
 
                         arg_watch_bind = r;
+                        break;
+
+                case 'j':
+                        if (on_tty())
+                                arg_json = JSON_PRETTY;
+                        else
+                                arg_json = JSON_SHORT;
+                        break;
+
+                case ARG_JSON:
+                        if (streq(optarg, "short"))
+                                arg_json = JSON_SHORT;
+                        else if (streq(optarg, "pretty"))
+                                arg_json = JSON_PRETTY;
+                        else if (streq(optarg, "help")) {
+                                fputs("short\n"
+                                      "pretty\n", stdout);
+                                return 0;
+                        } else {
+                                log_error("Unknown JSON out mode: %s", optarg);
+                                return -EINVAL;
+                        }
+
                         break;
 
                 case '?':

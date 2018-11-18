@@ -1,8 +1,10 @@
 Bugfixes:
 
-* the error paths in usbffs_dispatch_ep() leak memory
-
 * copy.c: set the right chattrs before copying files and others after
+
+* Many manager configuration settings that are only applicable to user
+  manager or system manager can be always set. It would be better to reject
+  them when parsing config.
 
 External:
 
@@ -14,14 +16,53 @@ Janitorial Clean-ups:
 
 * Rearrange tests so that the various test-xyz.c match a specific src/basic/xyz.c again
 
-* copy.c: set the right chattrs before copying files and others after
-
 * rework mount.c and swap.c to follow proper state enumeration/deserialization
   semantics, like we do for device.c now
 
-* udev: drop "collect", it's nonsense
-
 Features:
+
+* add a concept for automatically loading per-unit secrets off disk and
+  inserting them into the kernel keyring. Maybe SecretsDirectory= similar to
+  ConfigurationDirectory=.
+
+* systemd-gpt-auto: if we find the root dir mounted read-only and the gpt flag
+  doesn't say so generate job that remounts it writable
+
+* when no locale is configured, default to UEFI's PlatformLang variable
+
+* When logind.conf contains HandleLidSwitch=suspend-then-hibernate and we can't
+  hibernate because the swap partition isn't large enough, still suspend
+
+* bootctl: implement Type #2 boot loader entry discovery
+
+* bootctl,sd-boot: actually honour the "architecture" key
+
+* consider splitting out all temporary file creation APIs (we have so many in
+  fileio.h and elsewhere!) into a new util file of its own.
+
+* set memory.oom.group in cgroupsv2 for all leaf cgroups (kernel v4.19+)
+
+* drop umask() calls and suchlike from our generators, pid1 should set things up correctly anyway
+
+* paranoia: whenever we process passwords, call mlock() on the memory
+  first. i.e. look for all places we use string_erase()/string_free_erase() and
+  augment them with mlock()
+
+* whenever oom_kill memory.event event is triggered print a nice log message
+
+* Move RestrictAddressFamily= to the new cgroup create socket
+
+* support the bind/connect/sendmsg cgroup stuff for sandboxing, and possibly
+  patching around
+
+* maybe implicitly attach monotonic+realtime timestamps to outgoing messages in
+  log.c and sd-journal-send
+
+* chown() tty a service is attached to after the service goes down
+
+* optionally: turn on cgroup delegation for per-session scope units
+
+* introduce per-unit (i.e. per-slice, per-service) journal log size limits.
 
 * optionally, if a per-partition GPT flag is set for the root/home/… partitions
   format the partition on next boot and unset the flag, in order to implement
@@ -30,19 +71,22 @@ Features:
   show state of these flags, and optionally trigger such a factory reset on
   next boot by setting the flag.
 
-* logind: maybe watch utmp asynchronously using inotify, and populate our own
-  tracked session metadata from the fields available therein. Why bother? Right
-  now, all "ssh" sessions will be tracked without their TTY by logind (which is
-  not just unfriendly to users as this means "loginctl session-status" shows
-  less information than "who" in many cases, but also breaks the IdleAction
-  logic, as we never can detect such sessions as idle, as we have no TTY to
-  watch). ssh sets the PAM_TTY field on its PAM sessions to "ssh" rather than
-  the actual pty, because the PAM session is opened early on for new
-  connections, but the PTY only registered much later (if at all). ssh writes
-  the utmp record only after a TTY is actually registered, hence we could use
-  this data then, and use it if it is available. Using utmp for this is ugly of
-  course, and watching things asynchronously even more so, but it should be
-  good enough for the idle detection logic at least.
+* sd-boot: search drop-ins in $BOOT, too
+
+* sd-boot: add "oneshot boot timeout" variable support
+
+* sd-boot: automatically load EFI modules from some drop-in dir, so that people
+  can add in file system drivers and such
+
+* esp generator: also mount $BOOT if found
+
+* sd-boot: optionally, show boot menu when previous default boot item has
+  non-zero "tries done" count
+
+* logind: add "boot into bootmenu" API, and possibly even "boot into windows"
+  and "boot into macos".
+
+* bootspec.c: also enumerate EFI unified kernel images.
 
 * maybe extend .path units to expose fanotify() per-mount change events
 
@@ -76,8 +120,13 @@ Features:
   should be revisited to make clearer and also work if the payload systemd runs
   with full privs and without userns.
 
-* portables: introduce a new unit file directory /etc/systemd/system.attached/
-  or so, where we attach portable services to
+* hibernate/s2h: make this robust and safe to enable in Fedora by default.
+  Specifically:
+
+  1. add resume_offset support to the resume code (i.e. support swap files
+     properly)
+  2. check if swap is on weird storage and refuse if so
+  3. add autodetection of hibernation images
 
 * cgroups: use inotify to get notified when somebody else modifies cgroups
   owned by us, then log a friendly warning.
@@ -105,7 +154,7 @@ Features:
   zero and is not open anymore, while the latter happens when a file is
   unlinked from any dir.
 
-* port systemctl, systemd-inhibit, busctl, … over to format-table.[ch]'s table formatters
+* port systemctl, busctl, … over to format-table.[ch]'s table formatters
 
 * pid1: lock image configured with RootDirectory=/RootImage= using the usual nspawn semantics while the unit is up
 
@@ -162,13 +211,6 @@ Features:
 * calenderspec: add support for week numbers and day numbers within a
   year. This would allow us to define "bi-weekly" triggers safely.
 
-* add bpf-based implementation of devices cgroup controller logic for compat
-  with cgroupsv2 as supported by newest kernel
-
-* introduce sd_id128_get_boot_app_specific() which is like
-  sd_id128_get_machine_app_specific(). After all on long-running systems both
-  IDs have similar properties.
-
 * sd-bus: add vtable flag, that may be used to request client creds implicitly
   and asynchronously before dispatching the operation
 
@@ -183,7 +225,7 @@ Features:
 
 * taint systemd if there are fewer than 65536 users assigned (userns) to the system.
 
-* deprecate PermissionsStartOnly= and RootDirectoryStartOnly= in favour of the ExecStart= prefix chars
+* deprecate RootDirectoryStartOnly= in favour of a new ExecStart= prefix char
 
 * add a new RuntimeDirectoryPreserve= mode that defines a similar lifecycle for
   the runtime dir as we maintain for the fdstore: i.e. keep it around as long
@@ -241,15 +283,6 @@ Features:
 * add "systemctl wait" or so, which does what "systemd-run --wait" does, but
   for all units. It should be both a way to pin units into memory as well as a
   wait to retrieve their exit data.
-
-* maybe set a new set of env vars for services, based on RuntimeDirectory=,
-  StateDirectory=, LogsDirectory=, CacheDirectory= and ConfigurationDirectory=
-  automatically. For example, there could be $RUNTIME_DIRECTORY,
-  $STATE_DIRECTORY, $LOGS_DIRECTORY=, $CACHE_DIRECTORY and
-  $CONFIGURATION_DIRECTORY or so. This could be useful to write services that
-  can adapt to varying directories for these purposes. Special care has to be
-  taken if multiple dirs are configured. Maybe avoid setting the env vars in
-  that case?
 
 * expose IO accounting data on the bus, show it in systemd-run --wait and log
   about it in the resource log message
@@ -358,8 +391,6 @@ Features:
   on PID 1 with the relevant signals, and makes relevant files in /sys and
   /proc (such as the sysrq stuff) unavailable
 
-* DeviceAllow= should also generate seccomp filters for mknod()
-
 * make sure the ratelimit object can deal with USEC_INFINITY as way to turn off things
 
 * journalctl: make sure -f ends when the container indicated by -M terminates
@@ -442,8 +473,6 @@ Features:
 
 * hostnamectl: show root image uuid
 
-* sysfs set api in libudev is not const
-
 * Find a solution for SMACK capabilities stuff:
   http://lists.freedesktop.org/archives/systemd-devel/2014-December/026188.html
 
@@ -470,8 +499,6 @@ Features:
 * firstboot: make it useful to be run immediately after yum --installroot to set up a machine. (most specifically, make --copy-root-password work even if /etc/passwd already exists
 
 * maybe add support for specifier expansion in user.conf, specifically DefaultEnvironment=
-
-* introduce systemd-timesync-wait.service or so to sync on an NTP fix?
 
 * consider showing the unit names during boot up in the status output, not just the unit descriptions
 
@@ -614,7 +641,6 @@ Features:
   - document chaining of signal handler for SIGCHLD and child handlers
   - define more intervals where we will shift wakeup intervals around in, 1h, 6h, 24h, ...
   - generate a failure of a default event loop is executed out-of-thread
-  - maybe add support for inotify events (which we can do safely now, with O_PATH)
 
 * investigate endianness issues of UUID vs. GUID
 
@@ -673,11 +699,9 @@ Features:
 
 * logind:
   - logind: optionally, ignore idle-hint logic for autosuspend, block suspend as long as a session is around
-  - When we update the kernel all kind of hibernation should be prohibited until shutdown/reboot
   - logind: wakelock/opportunistic suspend support
   - Add pretty name for seats in logind
   - logind: allow showing logout dialog from system?
-  - session scopes/user unit: add RequiresMountsFor for the home directory of the user
   - add Suspend() bus calls which take timestamps to fix double suspend issues when somebody hits suspend and closes laptop quickly.
   - if pam_systemd is invoked by su from a process that is outside of a
     any session we should probably just become a NOP, since that's
@@ -850,8 +874,6 @@ Features:
     "machinectl start" with a new --ephemeral switch
   - "machinectl status" should also show internal logs of the container in
     question
-  - "machinectl list-images" should show os-release data, as well as
-    machine-info data (including deployment level)
   - "machinectl history"
   - "machinectl diff"
   - "machinectl commit" that takes a writable snapshot of a tree, invokes a
@@ -1046,8 +1068,6 @@ External:
 * patch kernel for xattr support in /dev, /proc/, /sys?
 
 * kernel: add device_type = "fb", "fbcon" to class "graphics"
-
-* drop accountsservice's StandardOutput=syslog and Type=dbus fields
 
 * /usr/bin/service should actually show the new command line
 

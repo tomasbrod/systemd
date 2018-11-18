@@ -12,6 +12,7 @@
 #include "stat-util.h"
 #include "string-util.h"
 #include "strv.h"
+#include "tests.h"
 #include "util.h"
 
 #define test_path_compare(a, b, result) {                 \
@@ -80,10 +81,10 @@ static void test_path(void) {
         test_path_simplify("///.//", "/.", "/");
         test_path_simplify("///.//.///", "/./.", "/");
         test_path_simplify("////.././///../.", "/.././../.", "/../..");
-        test_path_simplify(".", ".", "");
-        test_path_simplify("./", ".", "");
-        test_path_simplify(".///.//./.", "./././.", "");
-        test_path_simplify(".///.//././/", "./././.", "");
+        test_path_simplify(".", ".", ".");
+        test_path_simplify("./", ".", ".");
+        test_path_simplify(".///.//./.", "./././.", ".");
+        test_path_simplify(".///.//././/", "./././.", ".");
         test_path_simplify("//./aaa///.//./.bbb/..///c.//d.dd///..eeee/.",
                            "/./aaa/././.bbb/../c./d.dd/..eeee/.",
                            "/aaa/.bbb/../c./d.dd/..eeee");
@@ -292,7 +293,7 @@ static void test_strv_resolve(void) {
 
         assert_se(mkdtemp(tmp_dir) != NULL);
 
-        search_dirs = strv_new("/dir1", "/dir2", "/dir3", NULL);
+        search_dirs = strv_new("/dir1", "/dir2", "/dir3");
         assert_se(search_dirs);
         STRV_FOREACH(d, search_dirs) {
                 char *p = strappend(tmp_dir, *d);
@@ -506,9 +507,7 @@ static void test_empty_or_root(void) {
 }
 
 int main(int argc, char **argv) {
-        log_set_max_level(LOG_DEBUG);
-        log_parse_environment();
-        log_open();
+        test_setup_logging(LOG_DEBUG);
 
         test_path();
         test_path_equal_root();

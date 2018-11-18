@@ -258,6 +258,8 @@ static sd_dhcp_lease *dhcp_lease_free(sd_dhcp_lease *lease) {
                 free(option);
         }
 
+        free(lease->root_path);
+        free(lease->timezone);
         free(lease->hostname);
         free(lease->domainname);
         free(lease->dns);
@@ -330,8 +332,7 @@ static int lease_parse_string(const uint8_t *option, size_t len, char **ret) {
                 if (!string)
                         return -ENOMEM;
 
-                free(*ret);
-                *ret = string;
+                free_and_replace(*ret, string);
         }
 
         return 0;
@@ -1015,7 +1016,7 @@ int dhcp_lease_load(sd_dhcp_lease **ret, const char *lease_file) {
         if (r < 0)
                 return r;
 
-        r = parse_env_file(NULL, lease_file, NEWLINE,
+        r = parse_env_file(NULL, lease_file,
                            "ADDRESS", &address,
                            "ROUTER", &router,
                            "NETMASK", &netmask,
@@ -1066,8 +1067,7 @@ int dhcp_lease_load(sd_dhcp_lease **ret, const char *lease_file) {
                            "OPTION_251", &options[27],
                            "OPTION_252", &options[28],
                            "OPTION_253", &options[29],
-                           "OPTION_254", &options[30],
-                           NULL);
+                           "OPTION_254", &options[30]);
         if (r < 0)
                 return r;
 

@@ -77,14 +77,14 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_LOG_LEVEL:
                         r = log_set_max_level_from_string(optarg);
                         if (r < 0)
-                                log_error_errno(r, "Failed to parse log level %s, ignoring.", optarg);
+                                log_error_errno(r, "Failed to parse log level %s, ignoring: %m", optarg);
 
                         break;
 
                 case ARG_LOG_TARGET:
                         r = log_set_target_from_string(optarg);
                         if (r < 0)
-                                log_error_errno(r, "Failed to parse log target %s, ignoring", optarg);
+                                log_error_errno(r, "Failed to parse log target %s, ignoring: %m", optarg);
 
                         break;
 
@@ -93,7 +93,7 @@ static int parse_argv(int argc, char *argv[]) {
                         if (optarg) {
                                 r = log_show_color_from_string(optarg);
                                 if (r < 0)
-                                        log_error_errno(r, "Failed to parse log color setting %s, ignoring", optarg);
+                                        log_error_errno(r, "Failed to parse log color setting %s, ignoring: %m", optarg);
                         } else
                                 log_show_color(true);
 
@@ -103,7 +103,7 @@ static int parse_argv(int argc, char *argv[]) {
                         if (optarg) {
                                 r = log_show_location_from_string(optarg);
                                 if (r < 0)
-                                        log_error_errno(r, "Failed to parse log location setting %s, ignoring", optarg);
+                                        log_error_errno(r, "Failed to parse log location setting %s, ignoring: %m", optarg);
                         } else
                                 log_show_location(true);
 
@@ -112,14 +112,14 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_EXIT_CODE:
                         r = safe_atou8(optarg, &arg_exit_code);
                         if (r < 0)
-                                log_error_errno(r, "Failed to parse exit code %s, ignoring", optarg);
+                                log_error_errno(r, "Failed to parse exit code %s, ignoring: %m", optarg);
 
                         break;
 
                 case ARG_TIMEOUT:
                         r = parse_sec(optarg, &arg_timeout);
                         if (r < 0)
-                                log_error_errno(r, "Failed to parse shutdown timeout %s, ignoring", optarg);
+                                log_error_errno(r, "Failed to parse shutdown timeout %s, ignoring: %m", optarg);
 
                         break;
 
@@ -171,16 +171,23 @@ static int switch_root_initramfs(void) {
  */
 static bool sync_making_progress(unsigned long long *prev_dirty) {
         _cleanup_fclose_ FILE *f = NULL;
-        char line[LINE_MAX];
-        bool r = false;
         unsigned long long val = 0;
+        bool r = false;
 
         f = fopen("/proc/meminfo", "re");
         if (!f)
                 return log_warning_errno(errno, "Failed to open /proc/meminfo: %m");
 
-        FOREACH_LINE(line, f, log_warning_errno(errno, "Failed to parse /proc/meminfo: %m")) {
+        for (;;) {
+                _cleanup_free_ char *line = NULL;
                 unsigned long long ull = 0;
+                int q;
+
+                q = read_line(f, LONG_LINE_MAX, &line);
+                if (q < 0)
+                        return log_warning_errno(q, "Failed to parse /proc/meminfo: %m");
+                if (q == 0)
+                        break;
 
                 if (!first_word(line, "NFS_Unstable:") && !first_word(line, "Writeback:") && !first_word(line, "Dirty:"))
                         continue;
@@ -435,7 +442,7 @@ int main(int argc, char *argv[]) {
         arguments[0] = NULL;
         arguments[1] = arg_verb;
         arguments[2] = NULL;
-        execute_directories(dirs, DEFAULT_TIMEOUT_USEC, NULL, NULL, arguments);
+        execute_directories(dirs, DEFAULT_TIMEOUT_USEC, NULL, NULL, arguments, NULL);
 
         if (can_initrd) {
                 r = switch_root_initramfs();

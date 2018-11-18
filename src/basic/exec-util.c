@@ -16,6 +16,7 @@
 #include "hashmap.h"
 #include "macro.h"
 #include "process-util.h"
+#include "serialize.h"
 #include "set.h"
 #include "signal-util.h"
 #include "stat-util.h"
@@ -71,11 +72,12 @@ static int do_execute(
                 gather_stdout_callback_t const callbacks[_STDOUT_CONSUME_MAX],
                 void* const callback_args[_STDOUT_CONSUME_MAX],
                 int output_fd,
-                char *argv[]) {
+                char *argv[],
+                char *envp[]) {
 
         _cleanup_hashmap_free_free_ Hashmap *pids = NULL;
         _cleanup_strv_free_ char **paths = NULL;
-        char **path;
+        char **path, **e;
         int r;
 
         /* We fork this all off from a child process so that we can somewhat cleanly make
@@ -86,7 +88,7 @@ static int do_execute(
 
         r = conf_files_list_strv(&paths, NULL, NULL, CONF_FILES_EXECUTABLE|CONF_FILES_REGULAR|CONF_FILES_FILTER_MASKED, (const char* const*) directories);
         if (r < 0)
-                return r;
+                return log_error_errno(r, "Failed to enumerate executables: %m");
 
         if (!callbacks) {
                 pids = hashmap_new(NULL);
@@ -99,6 +101,10 @@ static int do_execute(
 
         if (timeout != USEC_INFINITY)
                 alarm(DIV_ROUND_UP(timeout, USEC_PER_SEC));
+
+        STRV_FOREACH(e, envp)
+                if (putenv(*e) != 0)
+                        return log_error_errno(errno, "Failed to set environment variable: %m");
 
         STRV_FOREACH(path, paths) {
                 _cleanup_free_ char *t = NULL;
@@ -166,7 +172,8 @@ int execute_directories(
                 usec_t timeout,
                 gather_stdout_callback_t const callbacks[_STDOUT_CONSUME_MAX],
                 void* const callback_args[_STDOUT_CONSUME_MAX],
-                char *argv[]) {
+                char *argv[],
+                char *envp[]) {
 
         char **dirs = (char**) directories;
         _cleanup_close_ int fd = -1;
@@ -197,7 +204,7 @@ int execute_directories(
         if (r < 0)
                 return r;
         if (r == 0) {
-                r = do_execute(dirs, timeout, callbacks, callback_args, fd, argv);
+                r = do_execute(dirs, timeout, callbacks, callback_args, fd, argv, envp);
                 _exit(r < 0 ? EXIT_FAILURE : EXIT_SUCCESS);
         }
 
@@ -234,7 +241,7 @@ static int gather_environment_generate(int fd, void *arg) {
                 return -errno;
         }
 
-        r = load_env_file_pairs(f, NULL, NULL, &new);
+        r = load_env_file_pairs(f, NULL, &new);
         if (r < 0)
                 return r;
 
@@ -262,8 +269,8 @@ static int gather_environment_generate(int fd, void *arg) {
 }
 
 static int gather_environment_collect(int fd, void *arg) {
-        char ***env = arg;
         _cleanup_fclose_ FILE *f = NULL;
+        char ***env = arg;
         int r;
 
         /* Write out a series of env=cescape(VAR=value) assignments to fd. */
@@ -276,40 +283,59 @@ static int gather_environment_collect(int fd, void *arg) {
                 return -errno;
         }
 
-        r = serialize_environment(f, *env);
+        r = serialize_strv(f, "env", *env);
         if (r < 0)
                 return r;
 
-        if (ferror(f))
-                return errno > 0 ? -errno : -EIO;
+        r = fflush_and_check(f);
+        if (r < 0)
+                return r;
 
         return 0;
 }
 
 static int gather_environment_consume(int fd, void *arg) {
-        char ***env = arg;
         _cleanup_fclose_ FILE *f = NULL;
-        char line[LINE_MAX];
-        int r = 0, k;
+        char ***env = arg;
+        int r = 0;
 
         /* Read a series of env=cescape(VAR=value) assignments from fd into env. */
 
         assert(env);
 
-        f = fdopen(fd, "r");
+        f = fdopen(fd, "re");
         if (!f) {
                 safe_close(fd);
                 return -errno;
         }
 
-        FOREACH_LINE(line, f, return -EIO) {
-                truncate_nl(line);
+        for (;;) {
+                _cleanup_free_ char *line = NULL;
+                const char *v;
+                int k;
 
-                k = deserialize_environment(env, line);
+                k = read_line(f, LONG_LINE_MAX, &line);
                 if (k < 0)
-                        log_error_errno(k, "Invalid line \"%s\": %m", line);
-                if (k < 0 && r == 0)
-                        r = k;
+                        return k;
+                if (k == 0)
+                        break;
+
+                v = startswith(line, "env=");
+                if (!v) {
+                        log_debug("Serialization line \"%s\" unexpectedly didn't start with \"env=\".", line);
+                        if (r == 0)
+                                r = -EINVAL;
+
+                        continue;
+                }
+
+                k = deserialize_environment(v, env);
+                if (k < 0) {
+                        log_debug_errno(k, "Invalid serialization line \"%s\": %m", line);
+
+                        if (r == 0)
+                                r = k;
+                }
         }
 
         return r;

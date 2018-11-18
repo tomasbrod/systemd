@@ -48,6 +48,9 @@ typedef enum {
         ARROW,
         MDASH,
         ELLIPSIS,
+        MU,
+        CHECK_MARK,
+        CROSS_MARK,
         _SPECIAL_GLYPH_MAX
 } SpecialGlyph;
 
@@ -64,4 +67,9 @@ static inline void freelocalep(locale_t *p) {
                 return;
 
         freelocale(*p);
+}
+
+void locale_variables_free(char* l[_VARIABLE_LC_MAX]);
+static inline void locale_variables_freep(char*(*l)[_VARIABLE_LC_MAX]) {
+        locale_variables_free(*l);
 }

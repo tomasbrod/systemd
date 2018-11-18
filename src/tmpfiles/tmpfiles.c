@@ -128,6 +128,8 @@ typedef struct Item {
 
         bool force:1;
 
+        bool allow_failure:1;
+
         bool done:1;
 } Item;
 
@@ -151,7 +153,7 @@ static bool arg_create = false;
 static bool arg_clean = false;
 static bool arg_remove = false;
 static bool arg_boot = false;
-static bool arg_no_pager = false;
+static PagerFlags arg_pager_flags = 0;
 
 static char **arg_include_prefixes = NULL;
 static char **arg_exclude_prefixes = NULL;
@@ -172,6 +174,8 @@ static const Specifier specifier_table[] = {
         { 'H', specifier_host_name,       NULL },
         { 'v', specifier_kernel_release,  NULL },
 
+        { 'g', specifier_group_name,      NULL },
+        { 'G', specifier_group_id,        NULL },
         { 'U', specifier_user_id,         NULL },
         { 'u', specifier_user_name,       NULL },
         { 'h', specifier_user_home,       NULL },
@@ -1230,7 +1234,7 @@ static int fd_set_attribute(Item *item, int fd, const char *path, const struct s
         if (procfs_fd < 0)
                 return log_error_errno(procfs_fd, "Failed to re-open '%s': %m", path);
 
-        r = chattr_fd(procfs_fd, f, item->attribute_mask);
+        r = chattr_fd(procfs_fd, f, item->attribute_mask, NULL);
         if (r < 0)
                 log_full_errno(IN_SET(r, -ENOTTY, -EOPNOTSUPP) ? LOG_DEBUG : LOG_WARNING,
                                r,
@@ -2271,6 +2275,9 @@ static int process_item(Item *i) {
         r = arg_create ? create_item(i) : 0;
         q = arg_remove ? remove_item(i) : 0;
         p = arg_clean ? clean_item(i) : 0;
+        /* Failure can only be tolerated for create */
+        if (i->allow_failure)
+                r = 0;
 
         return t < 0 ? t :
                 r < 0 ? r :
@@ -2317,18 +2324,16 @@ static void item_array_free(ItemArray *a) {
         free(a);
 }
 
-static int item_compare(const void *a, const void *b) {
-        const Item *x = a, *y = b;
-
+static int item_compare(const Item *a, const Item *b) {
         /* Make sure that the ownership taking item is put first, so
          * that we first create the node, and then can adjust it */
 
-        if (takes_ownership(x->type) && !takes_ownership(y->type))
+        if (takes_ownership(a->type) && !takes_ownership(b->type))
                 return -1;
-        if (!takes_ownership(x->type) && takes_ownership(y->type))
+        if (!takes_ownership(a->type) && takes_ownership(b->type))
                 return 1;
 
-        return (int) x->type - (int) y->type;
+        return CMP(a->type, b->type);
 }
 
 static bool item_compatible(Item *a, Item *b) {
@@ -2476,7 +2481,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer, bool
         ItemArray *existing;
         OrderedHashmap *h;
         int r, pos;
-        bool force = false, boot = false;
+        bool force = false, boot = false, allow_failure = false;
 
         assert(fname);
         assert(line >= 1);
@@ -2521,6 +2526,8 @@ static int parse_line(const char *fname, unsigned line, const char *buffer, bool
                         boot = true;
                 else if (action[pos] == '+' && !force)
                         force = true;
+                else if (action[pos] == '-' && !allow_failure)
+                        allow_failure = true;
                 else {
                         *invalid_config = true;
                         log_error("[%s:%u] Unknown modifiers in command '%s'",
@@ -2537,6 +2544,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer, bool
 
         i.type = action[0];
         i.force = force;
+        i.allow_failure = allow_failure;
 
         r = specifier_printf(path, specifier_table, NULL, &i.path);
         if (r == -ENXIO)
@@ -2793,7 +2801,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer, bool
         memcpy(existing->items + existing->count++, &i, sizeof(i));
 
         /* Sort item array, to enforce stable ordering of application */
-        qsort_safe(existing->items, existing->count, sizeof(Item), item_compare);
+        typesafe_qsort(existing->items, existing->count, item_compare);
 
         zero(i);
         return 0;
@@ -2941,7 +2949,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_NO_PAGER:
-                        arg_no_pager = true;
+                        arg_pager_flags |= PAGER_DISABLE;
                         break;
 
                 case '?':
@@ -2971,10 +2979,9 @@ static int parse_argv(int argc, char *argv[]) {
 
 static int read_config_file(char **config_dirs, const char *fn, bool ignore_enoent, bool *invalid_config) {
         _cleanup_fclose_ FILE *_f = NULL;
-        FILE *f;
-        char line[LINE_MAX];
         Iterator iterator;
         unsigned v = 0;
+        FILE *f;
         Item *i;
         int r = 0;
 
@@ -2998,10 +3005,17 @@ static int read_config_file(char **config_dirs, const char *fn, bool ignore_enoe
                 f = _f;
         }
 
-        FOREACH_LINE(line, f, break) {
+        for (;;) {
+                _cleanup_free_ char *line = NULL;
+                bool invalid_line = false;
                 char *l;
                 int k;
-                bool invalid_line = false;
+
+                k = read_line(f, LONG_LINE_MAX, &line);
+                if (k < 0)
+                        return log_error_errno(k, "Failed to read '%s': %m", fn);
+                if (k == 0)
+                        break;
 
                 v++;
 
@@ -3133,7 +3147,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (arg_cat_config) {
-                (void) pager_open(arg_no_pager, false);
+                (void) pager_open(arg_pager_flags);
 
                 r = cat_config(config_dirs, argv + optind);
                 goto finish;

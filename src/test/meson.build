@@ -6,7 +6,8 @@ test_hashmap_ordered_c = custom_target(
         input : [awkscript, 'test-hashmap-plain.c'],
         output : 'test-hashmap-ordered.c',
         command : [awk, '-f', '@INPUT0@', '@INPUT1@'],
-        capture : true)
+        capture : true,
+        build_by_default : want_tests != 'false')
 
 test_include_dir = include_directories('.')
 
@@ -26,14 +27,16 @@ test_libsystemd_sym_c = custom_target(
         input : [libsystemd_sym_path] + systemd_headers,
         output : 'test-libsystemd-sym.c',
         command : [generate_sym_test_py, libsystemd_sym_path] + systemd_headers,
-        capture : true)
+        capture : true,
+        build_by_default : want_tests != 'false')
 
 test_libudev_sym_c = custom_target(
         'test-libudev-sym.c',
         input : [libudev_sym_path, libudev_h_path],
         output : 'test-libudev-sym.c',
         command : [generate_sym_test_py, '@INPUT0@', '@INPUT1@'],
-        capture : true)
+        capture : true,
+        build_by_default : want_tests != 'false')
 
 test_dlopen_c = files('test-dlopen.c')
 
@@ -59,6 +62,16 @@ tests += [
           libselinux,
           libmount,
           libblkid]],
+
+        [['src/test/test-emergency-action.c'],
+         [libcore,
+          libshared],
+         []],
+
+        [['src/test/test-chown-rec.c'],
+         [libcore,
+          libshared],
+         []],
 
         [['src/test/test-job-type.c'],
          [libcore,
@@ -135,6 +148,10 @@ tests += [
           libmount,
           libblkid]],
 
+        [['src/test/test-serialize.c'],
+         [],
+         []],
+
         [['src/test/test-utf8.c'],
          [],
          []],
@@ -185,6 +202,10 @@ tests += [
          []],
 
         [['src/test/test-util.c'],
+         [],
+         []],
+
+        [['src/test/test-json.c'],
          [],
          []],
 
@@ -391,6 +412,10 @@ tests += [
         [['src/test/test-set.c'],
          [],
          []],
+
+        [['src/test/test-set-disable-mempool.c'],
+         [],
+         [threads]],
 
         [['src/test/test-bitmap.c'],
          [],
@@ -627,7 +652,7 @@ tests += [
           libblkid,
           libkmod,
           libacl],
-         '', 'manual'],
+         '', 'manual', '-DLOG_REALM=LOG_REALM_UDEV'],
 
         [['src/test/test-id128.c'],
          [],
@@ -656,6 +681,10 @@ tests += [
          [libmount]],
 
         [['src/test/test-bus-util.c'],
+         [],
+         []],
+
+        [['src/test/test-sd-hwdb.c'],
          [],
          []],
 ]
@@ -756,8 +785,7 @@ tests += [
           libshared],
          [threads,
           libxz,
-          liblz4],
-         '', '', '-DCATALOG_DIR="@0@"'.format(build_catalog_dir)],
+          liblz4]],
 
         [['src/journal/test-compress.c'],
          [libjournal_core,
@@ -874,6 +902,27 @@ tests += [
         [['src/libsystemd/sd-login/test-login.c'],
          [],
          []],
+
+        [['src/libsystemd/sd-device/test-sd-device.c'],
+         [],
+         []],
+
+        [['src/libsystemd/sd-device/test-sd-device-thread.c'],
+         [libbasic,
+          libshared_static,
+          libsystemd],
+         [threads]],
+
+        [['src/libsystemd/sd-device/test-udev-device-thread.c'],
+         [libbasic,
+          libshared_static,
+          libudev],
+         [threads]],
+
+        [['src/libsystemd/sd-device/test-sd-device-monitor.c'],
+         [],
+         []],
+
 ]
 
 if cxx.found()

@@ -116,7 +116,7 @@ L     /tmp/foobar -    -    -    -   /dev/null</programlisting>
       <title>Type</title>
 
       <para>The type consists of a single letter and optionally an
-      exclamation mark.</para>
+      exclamation mark and/or minus sign.</para>
 
       <para>The following line types are understood:</para>
 
@@ -439,6 +439,15 @@ r! /tmp/.X[0-9]*-lock</programlisting>
       running system, and will only be executed with
       <option>--boot</option>.</para>
 
+      <para>If the minus sign is used, this line failing to run
+      successfully during create (and only create) will not cause
+      the execution of <command>systemd-tmpfiles</command> to return
+      an error.</para>
+
+      <para>For example:
+      <programlisting># Modify sysfs but don't fail if we are in a container with a read-only /proc
+w- /proc/sys/vm/swappiness - - - - 10</programlisting></para>
+
       <para>Note that for all line types that result in creation of any kind of file node
       (i.e. <varname>f</varname>/<varname>F</varname>,
       <varname>d</varname>/<varname>D</varname>/<varname>v</varname>/<varname>q</varname>/<varname>Q</varname>,
@@ -484,16 +493,11 @@ r! /tmp/.X[0-9]*-lock</programlisting>
     <refsect2>
       <title>UID, GID</title>
 
-      <para>The user and group to use for this file or directory. This
-      may either be a numeric user/group ID or a user or group
-      name. If omitted or when set to <literal>-</literal>, the
-      default 0 (root) is used. For <varname>z</varname> and
-      <varname>Z</varname> lines, when omitted or when set to
-      <literal>-</literal>, the file ownership will not be
-      modified. These parameters are ignored for <varname>x</varname>,
-      <varname>r</varname>, <varname>R</varname>,
-      <varname>L</varname>, <varname>t</varname>, and
-      <varname>a</varname> lines.</para>
+      <para>The user and group to use for this file or directory. This may either be a numeric user/group ID or a user or group
+      name. If omitted or when set to <literal>-</literal>, the user/group ID of the user who invokes <command>systemd-tmpfiles</command> is used.
+      For <varname>z</varname> and <varname>Z</varname> lines, when omitted or when set to <literal>-</literal>, the file ownership will not be
+      modified. These parameters are ignored for <varname>x</varname>, <varname>r</varname>, <varname>R</varname>, <varname>L</varname>,
+      <varname>t</varname>, and <varname>a</varname> lines.</para>
     </refsect2>
 
     <refsect2>
@@ -623,6 +627,16 @@ r! /tmp/.X[0-9]*-lock</programlisting>
               <entry><literal>%T</literal></entry>
               <entry>Directory for temporary files</entry>
               <entry>This is either <filename>/tmp</filename> or the path <literal>$TMPDIR</literal>, <literal>$TEMP</literal> or <literal>$TMP</literal> are set to.</entry>
+            </row>
+            <row>
+              <entry><literal>%g</literal></entry>
+              <entry>User group</entry>
+              <entry>This is the name of the group running the command. In case of the system instance this resolves to <literal>root</literal>.</entry>
+            </row>
+            <row>
+              <entry><literal>%G</literal></entry>
+              <entry>User GID</entry>
+              <entry>This is the numeric GID of the group running the command. In case of the system instance this resolves to <constant>0</constant>.</entry>
             </row>
             <row>
               <entry><literal>%u</literal></entry>

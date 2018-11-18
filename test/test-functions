@@ -190,7 +190,7 @@ $KERNEL_APPEND \
 run_nspawn() {
     [[ -d /run/systemd/system ]] || return 1
 
-    local _nspawn_cmd="$BUILD_DIR/systemd-nspawn $NSPAWN_ARGUMENTS --register=no --kill-signal=SIGKILL --directory=$TESTDIR/nspawn-root $PATH_TO_INIT $KERNEL_APPEND"
+    local _nspawn_cmd="$BUILD_DIR/systemd-nspawn $NSPAWN_ARGUMENTS --register=no --kill-signal=SIGKILL --directory=$TESTDIR/$1 $PATH_TO_INIT $KERNEL_APPEND"
     if [[ "$NSPAWN_TIMEOUT" != "infinity" ]]; then
         _nspawn_cmd="timeout --foreground $NSPAWN_TIMEOUT $_nspawn_cmd"
     fi
@@ -330,7 +330,8 @@ create_asan_wrapper() {
 set -x
 
 DEFAULT_ASAN_OPTIONS=strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1
-DEFAULT_ENVIRONMENT=ASAN_OPTIONS=\$DEFAULT_ASAN_OPTIONS
+DEFAULT_UBSAN_OPTIONS=print_stacktrace=1:print_summary=1
+DEFAULT_ENVIRONMENT="ASAN_OPTIONS=\$DEFAULT_ASAN_OPTIONS UBSAN_OPTIONS=\$DEFAULT_UBSAN_OPTIONS:halt_on_error=1"
 
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
@@ -353,7 +354,7 @@ JOURNALD_CONF_DIR=/etc/systemd/system/systemd-journald.service.d
 mkdir -p "\$JOURNALD_CONF_DIR"
 printf "[Service]\nEnvironment=ASAN_OPTIONS=\$DEFAULT_ASAN_OPTIONS:log_path=/systemd-journald.asan.log\n" >"\$JOURNALD_CONF_DIR/env.conf"
 
-export ASAN_OPTIONS=\$DEFAULT_ASAN_OPTIONS:log_path=/systemd.asan.log
+export ASAN_OPTIONS=\$DEFAULT_ASAN_OPTIONS:log_path=/systemd.asan.log UBSAN_OPTIONS=\$DEFAULT_UBSAN_OPTIONS
 exec  $ROOTLIBDIR/systemd "\$@"
 EOF
 
@@ -420,7 +421,7 @@ get_ldpath() {
 
 install_missing_libraries() {
     # install possible missing libraries
-    for i in $initdir{,/usr}/{sbin,bin}/* $initdir{,/usr}/lib/systemd/*; do
+    for i in $initdir{,/usr}/{sbin,bin}/* $initdir{,/usr}/lib/systemd/{,tests/{,manual/,unsafe/}}*; do
         LD_LIBRARY_PATH=$(get_ldpath $i) inst_libs $i
     done
 }
@@ -453,10 +454,10 @@ EOF
 }
 
 check_result_nspawn() {
-    ret=1
-    [[ -e $TESTDIR/nspawn-root/testok ]] && ret=0
-    [[ -f $TESTDIR/nspawn-root/failed ]] && cp -a $TESTDIR/nspawn-root/failed $TESTDIR
-    cp -a $TESTDIR/nspawn-root/var/log/journal $TESTDIR
+    local ret=1
+    [[ -e $TESTDIR/$1/testok ]] && ret=0
+    [[ -f $TESTDIR/$1/failed ]] && cp -a $TESTDIR/$1/failed $TESTDIR
+    cp -a $TESTDIR/$1/var/log/journal $TESTDIR
     [[ -f $TESTDIR/failed ]] && cat $TESTDIR/failed
     ls -l $TESTDIR/journal/*/*.journal
     test -s $TESTDIR/failed && ret=$(($ret+1))
@@ -466,7 +467,7 @@ check_result_nspawn() {
 
 # can be overridden in specific test
 check_result_qemu() {
-    ret=1
+    local ret=1
     mkdir -p $TESTDIR/root
     mount ${LOOPDEV}p1 $TESTDIR/root
     [[ -e $TESTDIR/root/testok ]] && ret=0
@@ -504,9 +505,8 @@ install_execs() {
     export PKG_CONFIG_PATH=$BUILD_DIR/src/core/
     systemdsystemunitdir=$(pkg-config --variable=systemdsystemunitdir systemd)
     systemduserunitdir=$(pkg-config --variable=systemduserunitdir systemd)
-    egrep -ho '^Exec[^ ]*=[^ ]+' $initdir/{$systemdsystemunitdir,$systemduserunitdir}/*.service \
-         | while read i; do
-         i=${i##Exec*=}; i=${i##[@+\!-]}; i=${i##\!}
+    sed -r -n 's|^Exec[a-zA-Z]*=[@+!-]*([^ ]+).*|\1|gp' $initdir/{$systemdsystemunitdir,$systemduserunitdir}/*.service \
+         | sort -u | while read i; do
          # some {rc,halt}.local scripts and programs are okay to not exist, the rest should
          inst $i || [ "${i%.local}" != "$i" ] || [ "${i%systemd-update-done}" != "$i" ]
      done
@@ -590,7 +590,15 @@ install_libnss() {
 
 install_dbus() {
     inst $ROOTLIBDIR/system/dbus.socket
-    inst $ROOTLIBDIR/system/dbus.service
+
+    # Fedora rawhide replaced dbus.service with dbus-daemon.service
+    if [ -f $ROOTLIBDIR/system/dbus-daemon.service ]; then
+        inst $ROOTLIBDIR/system/dbus-daemon.service
+        # Alias symlink
+        inst_symlink /etc/systemd/system/dbus.service
+    else
+        inst $ROOTLIBDIR/system/dbus.service
+    fi
 
     find \
         /etc/dbus-1 /usr/share/dbus-1 -xtype f \
@@ -623,12 +631,33 @@ install_pam() {
 }
 
 install_keymaps() {
+    # The first three paths may be deprecated.
+    # It seems now the last two paths are used by many distributions.
     for i in \
         /usr/lib/kbd/keymaps/include/* \
         /usr/lib/kbd/keymaps/i386/include/* \
-        /usr/lib/kbd/keymaps/i386/qwerty/us.*; do
+        /usr/lib/kbd/keymaps/i386/qwerty/us.* \
+        /usr/lib/kbd/keymaps/legacy/include/* \
+        /usr/lib/kbd/keymaps/legacy/i386/qwerty/us.*; do
             [[ -f $i ]] || continue
             inst $i
+    done
+
+    # When it takes any argument, then install more keymaps.
+    if [[ -n $1 ]]; then
+        for i in \
+        /usr/lib/kbd/keymaps/i386/*/* \
+        /usr/lib/kbd/keymaps/legacy/i386/*/*; do
+            [[ -f $i ]] || continue
+            inst $i
+        done
+    fi
+}
+
+install_zoneinfo() {
+    for i in /usr/share/zoneinfo/{,*/,*/*/}*; do
+        [[ -f $i ]] || continue
+        inst $i
     done
 }
 
@@ -666,6 +695,9 @@ setup_nspawn_root() {
     cp -ar $initdir $TESTDIR/nspawn-root
     # we don't mount in the nspawn root
     rm -f $TESTDIR/nspawn-root/etc/fstab
+    if [[ "$RUN_IN_UNPRIVILEGED_CONTAINER" = "yes" ]]; then
+        cp -ar $TESTDIR/nspawn-root $TESTDIR/unprivileged-nspawn-root
+    fi
 }
 
 setup_basic_dirs() {
@@ -758,7 +790,7 @@ _lvl2char() {
 # This enables:
 # dwarn "This is a warning"
 # echo "This is a warning" | dwarn
-LOG_LEVEL=4
+LOG_LEVEL=${LOG_LEVEL:-4}
 
 dlog() {
     [ -z "$LOG_LEVEL" ] && return 0
@@ -1482,11 +1514,19 @@ test_run() {
         fi
     fi
     if [ -z "$TEST_NO_NSPAWN" ]; then
-        if run_nspawn; then
-            check_result_nspawn || return 1
+        if run_nspawn "nspawn-root"; then
+            check_result_nspawn "nspawn-root" || return 1
         else
             dwarn "can't run systemd-nspawn, skipping"
         fi
+
+        if [[ "$RUN_IN_UNPRIVILEGED_CONTAINER" = "yes" ]]; then
+            if NSPAWN_ARGUMENTS="-U --private-network $NSPAWN_ARGUMENTS" run_nspawn "unprivileged-nspawn-root"; then
+                check_result_nspawn "unprivileged-nspawn-root" || return 1
+            else
+                dwarn "can't run systemd-nspawn, skipping"
+            fi
+	fi
     fi
     return 0
 }
@@ -1515,7 +1555,9 @@ do_test() {
         case $1 in
             --run)
                 echo "TEST RUN: $TEST_DESCRIPTION"
-                if test_run; then
+                test_run
+                ret=$?
+                if (( $ret == 0 )); then
                     echo "TEST RUN: $TEST_DESCRIPTION [OK]"
                 else
                     echo "TEST RUN: $TEST_DESCRIPTION [FAILED]"

@@ -115,7 +115,7 @@ static int handle_db_line(sd_device *device, char key, const char *value) {
 
                 break;
         default:
-                log_debug("device db: unknown key '%c'", key);
+                log_device_debug(device, "sd-device: Unknown key '%c' in device db, ignoring", key);
         }
 
         return 0;
@@ -189,7 +189,7 @@ static int device_read_db(sd_device *device) {
                 if (r == -ENOENT)
                         return 0;
                 else
-                        return log_debug_errno(r, "sd-device: failed to read db '%s': %m", path);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to read db '%s': %m", path);
         }
 
         /* devices with a database entry are initialized */
@@ -207,7 +207,7 @@ static int device_read_db(sd_device *device) {
                         break;
                 case KEY:
                         if (db[i] != ':') {
-                                log_debug("sd-device: ignoring invalid db entry with key '%c'", key);
+                                log_device_debug(device, "sd-device: Invalid db entry with key '%c', ignoring", key);
 
                                 state = INVALID_LINE;
                         } else {
@@ -233,14 +233,14 @@ static int device_read_db(sd_device *device) {
                                 db[i] = '\0';
                                 r = handle_db_line(device, key, value);
                                 if (r < 0)
-                                        log_debug_errno(r, "sd-device: failed to handle db entry '%c:%s': %m", key, value);
+                                        log_device_debug_errno(device, r, "sd-device: Failed to handle db entry '%c:%s', ignoring: %m", key, value);
 
                                 state = PRE_KEY;
                         }
 
                         break;
                 default:
-                        assert_not_reached("invalid state when parsing db");
+                        assert_not_reached("Invalid state when parsing db");
                 }
         }
 
@@ -271,13 +271,16 @@ int device_get_devnode_mode(sd_device *device, mode_t *mode) {
         int r;
 
         assert(device);
-        assert(mode);
 
         r = device_read_db(device);
         if (r < 0)
                 return r;
 
-        *mode = device->devmode;
+        if (device->devmode == (mode_t) -1)
+                return -ENOENT;
+
+        if (mode)
+                *mode = device->devmode;
 
         return 0;
 }
@@ -286,13 +289,16 @@ int device_get_devnode_uid(sd_device *device, uid_t *uid) {
         int r;
 
         assert(device);
-        assert(uid);
 
         r = device_read_db(device);
         if (r < 0)
                 return r;
 
-        *uid = device->devuid;
+        if (device->devuid == (uid_t) -1)
+                return -ENOENT;
+
+        if (uid)
+                *uid = device->devuid;
 
         return 0;
 }
@@ -321,13 +327,16 @@ int device_get_devnode_gid(sd_device *device, gid_t *gid) {
         int r;
 
         assert(device);
-        assert(gid);
 
         r = device_read_db(device);
         if (r < 0)
                 return r;
 
-        *gid = device->devgid;
+        if (device->devgid == (gid_t) -1)
+                return -ENOENT;
+
+        if (gid)
+                *gid = device->devgid;
 
         return 0;
 }
@@ -367,43 +376,43 @@ static int device_amend(sd_device *device, const char *key, const char *value) {
                 /* the caller must verify or trust this data (e.g., if it comes from the kernel) */
                 r = device_set_syspath(device, path, false);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set syspath to '%s': %m", path);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set syspath to '%s': %m", path);
         } else if (streq(key, "SUBSYSTEM")) {
                 r = device_set_subsystem(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set subsystem to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set subsystem to '%s': %m", value);
         } else if (streq(key, "DEVTYPE")) {
                 r = device_set_devtype(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set devtype to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set devtype to '%s': %m", value);
         } else if (streq(key, "DEVNAME")) {
                 r = device_set_devname(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set devname to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set devname to '%s': %m", value);
         } else if (streq(key, "USEC_INITIALIZED")) {
                 r = device_set_usec_initialized(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set usec-initialized to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set usec-initialized to '%s': %m", value);
         } else if (streq(key, "DRIVER")) {
                 r = device_set_driver(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set driver to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set driver to '%s': %m", value);
         } else if (streq(key, "IFINDEX")) {
                 r = device_set_ifindex(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set ifindex to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set ifindex to '%s': %m", value);
         } else if (streq(key, "DEVMODE")) {
                 r = device_set_devmode(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set devmode to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set devmode to '%s': %m", value);
         } else if (streq(key, "DEVUID")) {
                 r = device_set_devuid(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set devuid to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set devuid to '%s': %m", value);
         } else if (streq(key, "DEVGID")) {
                 r = device_set_devgid(device, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set devgid to '%s': %m", value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set devgid to '%s': %m", value);
         } else if (streq(key, "DEVLINKS")) {
                 const char *word, *state;
                 size_t l;
@@ -416,7 +425,7 @@ static int device_amend(sd_device *device, const char *key, const char *value) {
 
                         r = device_add_devlink(device, devlink);
                         if (r < 0)
-                                return log_debug_errno(r, "sd-device: could not add devlink '%s': %m", devlink);
+                                return log_device_debug_errno(device, r, "sd-device: Failed to add devlink '%s': %m", devlink);
                 }
         } else if (streq(key, "TAGS")) {
                 const char *word, *state;
@@ -430,12 +439,12 @@ static int device_amend(sd_device *device, const char *key, const char *value) {
 
                         r = device_add_tag(device, tag);
                         if (r < 0)
-                                return log_debug_errno(r, "sd-device: could not add tag '%s': %m", tag);
+                                return log_device_debug_errno(device, r, "sd-device: Failed to add tag '%s': %m", tag);
                 }
         } else {
                 r = device_add_property_internal(device, key, value);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not add property '%s=%s': %m", key, value);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to add property '%s=%s': %m", key, value);
         }
 
         return 0;
@@ -471,7 +480,7 @@ static int device_append(sd_device *device, char *key, const char **_major, cons
 
         value = strchr(key, '=');
         if (!value) {
-                log_debug("sd-device: not a key-value pair: '%s'", key);
+                log_device_debug(device, "sd-device: Not a key-value pair: '%s'", key);
                 return -EINVAL;
         }
 
@@ -527,7 +536,7 @@ static int device_verify(sd_device *device, DeviceAction action, uint64_t seqnum
         assert(device);
 
         if (!device->devpath || !device->subsystem || action == _DEVICE_ACTION_INVALID || seqnum == 0) {
-                log_debug("sd-device: device created from strv lacks devpath, subsystem, action or seqnum");
+                log_device_debug(device, "sd-device: Device created from strv or nulstr lacks devpath, subsystem, action or seqnum.");
                 return -EINVAL;
         }
 
@@ -541,7 +550,7 @@ int device_new_from_strv(sd_device **ret, char **strv) {
         char **key;
         const char *major = NULL, *minor = NULL;
         DeviceAction action = _DEVICE_ACTION_INVALID;
-        uint64_t seqnum;
+        uint64_t seqnum = 0;
         int r;
 
         assert(ret);
@@ -560,7 +569,7 @@ int device_new_from_strv(sd_device **ret, char **strv) {
         if (major) {
                 r = device_set_devnum(device, major, minor);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set devnum %s:%s: %m", major, minor);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set devnum %s:%s: %m", major, minor);
         }
 
         r = device_verify(device, action, seqnum);
@@ -576,7 +585,7 @@ int device_new_from_nulstr(sd_device **ret, uint8_t *nulstr, size_t len) {
         _cleanup_(sd_device_unrefp) sd_device *device = NULL;
         const char *major = NULL, *minor = NULL;
         DeviceAction action = _DEVICE_ACTION_INVALID;
-        uint64_t seqnum;
+        uint64_t seqnum = 0;
         unsigned i = 0;
         int r;
 
@@ -595,7 +604,7 @@ int device_new_from_nulstr(sd_device **ret, uint8_t *nulstr, size_t len) {
                 key = (char*)&nulstr[i];
                 end = memchr(key, '\0', len - i);
                 if (!end) {
-                        log_debug("sd-device: failed to parse nulstr");
+                        log_device_debug(device, "sd-device: Failed to parse nulstr");
                         return -EINVAL;
                 }
                 i += end - key + 1;
@@ -608,7 +617,7 @@ int device_new_from_nulstr(sd_device **ret, uint8_t *nulstr, size_t len) {
         if (major) {
                 r = device_set_devnum(device, major, minor);
                 if (r < 0)
-                        return log_debug_errno(r, "sd-device: could not set devnum %s:%s: %m", major, minor);
+                        return log_device_debug_errno(device, r, "sd-device: Failed to set devnum %s:%s: %m", major, minor);
         }
 
         r = device_verify(device, action, seqnum);
@@ -717,13 +726,16 @@ int device_get_watch_handle(sd_device *device, int *handle) {
         int r;
 
         assert(device);
-        assert(handle);
 
         r = device_read_db(device);
         if (r < 0)
                 return r;
 
-        *handle = device->watch_handle;
+        if (device->watch_handle < 0)
+                return -ENOENT;
+
+        if (handle)
+                *handle = device->watch_handle;
 
         return 0;
 }
@@ -1071,8 +1083,8 @@ int device_update_db(sd_device *device) {
                 goto fail;
         }
 
-        log_debug("created %s file '%s' for '%s'", has_info ? "db" : "empty",
-                  path, device->devpath);
+        log_device_debug(device, "sd-device: Created %s file '%s' for '%s'", has_info ? "db" : "empty",
+                         path, device->devpath);
 
         return 0;
 
@@ -1080,7 +1092,7 @@ fail:
         (void) unlink(path);
         (void) unlink(path_tmp);
 
-        return log_error_errno(r, "failed to create %s file '%s' for '%s'", has_info ? "db" : "empty", path, device->devpath);
+        return log_device_debug_errno(device, r, "sd-device: Failed to create %s file '%s' for '%s'", has_info ? "db" : "empty", path, device->devpath);
 }
 
 int device_delete_db(sd_device *device) {

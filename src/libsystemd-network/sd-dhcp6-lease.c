@@ -11,15 +11,6 @@
 #include "strv.h"
 #include "util.h"
 
-int dhcp6_lease_clear_timers(DHCP6IA *ia) {
-        assert_return(ia, -EINVAL);
-
-        ia->timeout_t1 = sd_event_source_unref(ia->timeout_t1);
-        ia->timeout_t2 = sd_event_source_unref(ia->timeout_t2);
-
-        return 0;
-}
-
 int dhcp6_lease_ia_rebind_expire(const DHCP6IA *ia, uint32_t *expire) {
         DHCP6Address *addr;
         uint32_t valid = 0, t;
@@ -48,8 +39,6 @@ DHCP6IA *dhcp6_lease_free_ia(DHCP6IA *ia) {
         if (!ia)
                 return NULL;
 
-        dhcp6_lease_clear_timers(ia);
-
         while (ia->addresses) {
                 address = ia->addresses;
 
@@ -63,15 +52,16 @@ DHCP6IA *dhcp6_lease_free_ia(DHCP6IA *ia) {
 
 int dhcp6_lease_set_serverid(sd_dhcp6_lease *lease, const uint8_t *id,
                              size_t len) {
+        uint8_t *serverid;
+
         assert_return(lease, -EINVAL);
         assert_return(id, -EINVAL);
 
-        free(lease->serverid);
+        serverid = memdup(id, len);
+        if (!serverid)
+                return -ENOMEM;
 
-        lease->serverid = memdup(id, len);
-        if (!lease->serverid)
-                return -EINVAL;
-
+        free_and_replace(lease->serverid, serverid);
         lease->serverid_len = len;
 
         return 0;
@@ -132,6 +122,15 @@ int dhcp6_lease_get_iaid(sd_dhcp6_lease *lease, be32_t *iaid) {
         assert_return(iaid, -EINVAL);
 
         *iaid = lease->ia.ia_na.id;
+
+        return 0;
+}
+
+int dhcp6_lease_get_pd_iaid(sd_dhcp6_lease *lease, be32_t *iaid) {
+        assert_return(lease, -EINVAL);
+        assert_return(iaid, -EINVAL);
+
+        *iaid = lease->pd.ia_pd.id;
 
         return 0;
 }

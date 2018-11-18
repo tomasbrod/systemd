@@ -434,7 +434,7 @@ int bus_unit_method_kill(sd_bus_message *message, void *userdata, sd_bus_error *
                         u,
                         "kill",
                         CAP_KILL,
-                        N_("Authentication is required to kill '$(unit)'."),
+                        N_("Authentication is required to send a UNIX signal to the processes of '$(unit)'."),
                         true,
                         message,
                         error);
@@ -561,6 +561,44 @@ int bus_unit_method_unref(sd_bus_message *message, void *userdata, sd_bus_error 
         return sd_bus_reply_method_return(message, NULL);
 }
 
+static int property_get_refs(
+                sd_bus *bus,
+                const char *path,
+                const char *interface,
+                const char *property,
+                sd_bus_message *reply,
+                void *userdata,
+                sd_bus_error *error) {
+
+        Unit *u = userdata;
+        const char *i;
+        int r;
+
+        assert(bus);
+        assert(reply);
+
+        r = sd_bus_message_open_container(reply, 'a', "s");
+        if (r < 0)
+                return r;
+
+        for (i = sd_bus_track_first(u->bus_track); i; i = sd_bus_track_next(u->bus_track)) {
+                int c, k;
+
+                c = sd_bus_track_count_name(u->bus_track, i);
+                if (c < 0)
+                        return c;
+
+                /* Add the item multiple times if the ref count for each is above 1 */
+                for (k = 0; k < c; k++) {
+                        r = sd_bus_message_append(reply, "s", i);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        return sd_bus_message_close_container(reply);
+}
+
 const sd_bus_vtable bus_unit_vtable[] = {
         SD_BUS_VTABLE_START(0),
 
@@ -637,6 +675,7 @@ const sd_bus_vtable bus_unit_vtable[] = {
         SD_BUS_PROPERTY("RebootArgument", "s", NULL, offsetof(Unit, reboot_arg), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("InvocationID", "ay", bus_property_get_id128, offsetof(Unit, invocation_id), 0),
         SD_BUS_PROPERTY("CollectMode", "s", property_get_collect_mode, offsetof(Unit, collect_mode), 0),
+        SD_BUS_PROPERTY("Refs", "as", property_get_refs, 0, 0),
 
         SD_BUS_METHOD("Start", "s", "o", method_start, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Stop", "s", "o", method_stop, SD_BUS_VTABLE_UNPRIVILEGED),
@@ -1299,8 +1338,43 @@ static int bus_unit_set_live_property(
         return 0;
 }
 
+static int bus_set_transient_emergency_action(
+                Unit *u,
+                const char *name,
+                EmergencyAction *p,
+                sd_bus_message *message,
+                UnitWriteFlags flags,
+                sd_bus_error *error) {
+
+        const char *s;
+        EmergencyAction v;
+        int r;
+        bool system;
+
+        assert(p);
+
+        r = sd_bus_message_read(message, "s", &s);
+        if (r < 0)
+                return r;
+
+        system = MANAGER_IS_SYSTEM(u->manager);
+        r = parse_emergency_action(s, system, &v);
+        if (v < 0)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
+                                         v == -EOPNOTSUPP ? "EmergencyAction setting invalid for manager type: %s"
+                                                          : "Invalid %s setting: %s",
+                                         name, s);
+
+        if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
+                *p = v;
+                unit_write_settingf(u, flags, name,
+                                    "%s=%s", name, s);
+        }
+
+        return 1;
+}
+
 static BUS_DEFINE_SET_TRANSIENT_PARSE(collect_mode, CollectMode, collect_mode_from_string);
-static BUS_DEFINE_SET_TRANSIENT_PARSE(emergency_action, EmergencyAction, emergency_action_from_string);
 static BUS_DEFINE_SET_TRANSIENT_PARSE(job_mode, JobMode, job_mode_from_string);
 
 static int bus_set_transient_conditions(
@@ -1572,7 +1646,7 @@ static int bus_unit_set_transient_property(
                         if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
                                 _cleanup_free_ char *label = NULL;
 
-                                r = unit_add_dependency_by_name(u, d, other, NULL, true, UNIT_DEPENDENCY_FILE);
+                                r = unit_add_dependency_by_name(u, d, other, true, UNIT_DEPENDENCY_FILE);
                                 if (r < 0)
                                         return r;
 
@@ -1746,7 +1820,13 @@ static int bus_unit_track_handler(sd_bus_track *t, void *userdata) {
 
         u->bus_track = sd_bus_track_unref(u->bus_track); /* make sure we aren't called again */
 
+        /* If the client that tracks us disappeared, then there's reason to believe that the cgroup is empty now too,
+         * let's see */
+        unit_add_to_cgroup_empty_queue(u);
+
+        /* Also add the unit to the GC queue, after all if the client left it might be time to GC this unit */
         unit_add_to_gc_queue(u);
+
         return 0;
 }
 

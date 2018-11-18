@@ -407,7 +407,7 @@ void server_process_syslog_message(
         }
 
         if (syslog_ts_len > 0) {
-                const size_t hlen = strlen("SYSLOG_TIMESTAMP=");
+                const size_t hlen = STRLEN("SYSLOG_TIMESTAMP=");
 
                 t = newa(char, hlen + syslog_ts_len);
                 memcpy(t, "SYSLOG_TIMESTAMP=", hlen);
@@ -424,7 +424,7 @@ void server_process_syslog_message(
         iovec[n++] = IOVEC_MAKE_STRING(msg_msg);
 
         if (store_raw) {
-                const size_t hlen = strlen("SYSLOG_RAW=");
+                const size_t hlen = STRLEN("SYSLOG_RAW=");
 
                 msg_raw = new(char, hlen + raw_len);
                 if (!msg_raw) {
@@ -447,7 +447,6 @@ int server_open_syslog_socket(Server *s) {
                 .un.sun_family = AF_UNIX,
                 .un.sun_path = "/run/systemd/journal/dev-log",
         };
-        static const int one = 1;
         int r;
 
         assert(s);
@@ -457,7 +456,7 @@ int server_open_syslog_socket(Server *s) {
                 if (s->syslog_fd < 0)
                         return log_error_errno(errno, "socket() failed: %m");
 
-                (void) unlink(sa.un.sun_path);
+                (void) sockaddr_un_unlink(&sa.un);
 
                 r = bind(s->syslog_fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
                 if (r < 0)
@@ -465,23 +464,23 @@ int server_open_syslog_socket(Server *s) {
 
                 (void) chmod(sa.un.sun_path, 0666);
         } else
-                fd_nonblock(s->syslog_fd, 1);
+                (void) fd_nonblock(s->syslog_fd, true);
 
-        r = setsockopt(s->syslog_fd, SOL_SOCKET, SO_PASSCRED, &one, sizeof(one));
+        r = setsockopt_int(s->syslog_fd, SOL_SOCKET, SO_PASSCRED, true);
         if (r < 0)
-                return log_error_errno(errno, "SO_PASSCRED failed: %m");
+                return log_error_errno(r, "SO_PASSCRED failed: %m");
 
 #if HAVE_SELINUX
         if (mac_selinux_use()) {
-                r = setsockopt(s->syslog_fd, SOL_SOCKET, SO_PASSSEC, &one, sizeof(one));
+                r = setsockopt_int(s->syslog_fd, SOL_SOCKET, SO_PASSSEC, true);
                 if (r < 0)
-                        log_warning_errno(errno, "SO_PASSSEC failed: %m");
+                        log_warning_errno(r, "SO_PASSSEC failed: %m");
         }
 #endif
 
-        r = setsockopt(s->syslog_fd, SOL_SOCKET, SO_TIMESTAMP, &one, sizeof(one));
+        r = setsockopt_int(s->syslog_fd, SOL_SOCKET, SO_TIMESTAMP, true);
         if (r < 0)
-                return log_error_errno(errno, "SO_TIMESTAMP failed: %m");
+                return log_error_errno(r, "SO_TIMESTAMP failed: %m");
 
         r = sd_event_add_io(s->event, &s->syslog_event_source, s->syslog_fd, EPOLLIN, server_process_datagram, s);
         if (r < 0)

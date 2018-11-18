@@ -31,7 +31,9 @@
 static const char *arg_type = NULL; /* ANY_LUKS, CRYPT_LUKS1, CRYPT_LUKS2, CRYPT_TCRYPT or CRYPT_PLAIN */
 static char *arg_cipher = NULL;
 static unsigned arg_key_size = 0;
+#if HAVE_LIBCRYPTSETUP_SECTOR_SIZE
 static unsigned arg_sector_size = CRYPT_SECTOR_SIZE;
+#endif
 static int arg_key_slot = CRYPT_ANY_SLOT;
 static unsigned arg_keyfile_size = 0;
 static uint64_t arg_keyfile_offset = 0;
@@ -269,7 +271,6 @@ static int parse_options(const char *options) {
 }
 
 static char* disk_description(const char *path) {
-
         static const char name_fields[] =
                 "ID_PART_ENTRY_NAME\0"
                 "DM_NAME\0"
@@ -277,9 +278,8 @@ static char* disk_description(const char *path) {
                 "ID_MODEL\0";
 
         _cleanup_(sd_device_unrefp) sd_device *device = NULL;
+        const char *i, *name;
         struct stat st;
-        const char *i;
-        int r;
 
         assert(path);
 
@@ -289,17 +289,13 @@ static char* disk_description(const char *path) {
         if (!S_ISBLK(st.st_mode))
                 return NULL;
 
-        r = sd_device_new_from_devnum(&device, 'b', st.st_rdev);
-        if (r < 0)
+        if (sd_device_new_from_devnum(&device, 'b', st.st_rdev) < 0)
                 return NULL;
 
-        NULSTR_FOREACH(i, name_fields) {
-                const char *name;
-
-                r = sd_device_get_property_value(device, i, &name);
-                if (r >= 0 && !isempty(name))
+        NULSTR_FOREACH(i, name_fields)
+                if (sd_device_get_property_value(device, i, &name) >= 0 &&
+                    !isempty(name))
                         return strdup(name);
-        }
 
         return NULL;
 }
@@ -361,7 +357,7 @@ static int get_password(const char *vol, const char *src, usec_t until, bool acc
 
         name = name_buffer ? name_buffer : vol;
 
-        if (asprintf(&text, "Please enter passphrase for disk %s!", name) < 0)
+        if (asprintf(&text, "Please enter passphrase for disk %s:", name) < 0)
                 return log_oom();
 
         id = strjoina("cryptsetup:", disk_path);
@@ -377,7 +373,7 @@ static int get_password(const char *vol, const char *src, usec_t until, bool acc
 
                 assert(strv_length(passwords) == 1);
 
-                if (asprintf(&text, "Please enter passphrase for disk %s! (verification)", name) < 0)
+                if (asprintf(&text, "Please enter passphrase for disk %s (verification):", name) < 0)
                         return log_oom();
 
                 id = strjoina("cryptsetup-verification:", disk_path);

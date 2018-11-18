@@ -22,6 +22,7 @@
 #include "cgroup-show.h"
 #include "cgroup-util.h"
 #include "copy.h"
+#include "def.h"
 #include "env-util.h"
 #include "fd-util.h"
 #include "format-table.h"
@@ -37,6 +38,7 @@
 #include "path-util.h"
 #include "process-util.h"
 #include "ptyfwd.h"
+#include "rlimit-util.h"
 #include "sigbus.h"
 #include "signal-util.h"
 #include "spawn-polkit-agent.h"
@@ -55,7 +57,7 @@ static char **arg_property = NULL;
 static bool arg_all = false;
 static bool arg_value = false;
 static bool arg_full = false;
-static bool arg_no_pager = false;
+static PagerFlags arg_pager_flags = 0;
 static bool arg_legend = true;
 static const char *arg_kill_who = NULL;
 static int arg_signal = SIGTERM;
@@ -276,7 +278,7 @@ static int list_machines(int argc, char *argv[], void *userdata) {
 
         assert(bus);
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         r = sd_bus_call_method(bus,
                                "org.freedesktop.machine1",
@@ -356,7 +358,7 @@ static int list_images(int argc, char *argv[], void *userdata) {
 
         assert(bus);
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         r = sd_bus_call_method(bus,
                                "org.freedesktop.machine1",
@@ -540,7 +542,7 @@ typedef struct MachineStatusInfo {
         pid_t leader;
         struct dual_timestamp timestamp;
         int *netif;
-        unsigned n_netif;
+        size_t n_netif;
 } MachineStatusInfo;
 
 static void machine_status_info_clear(MachineStatusInfo *info) {
@@ -600,7 +602,7 @@ static void print_machine_status_info(sd_bus *bus, MachineStatusInfo *i) {
                 printf("\t    Root: %s\n", i->root_directory);
 
         if (i->n_netif > 0) {
-                unsigned c;
+                size_t c;
 
                 fputs("\t   Iface:", stdout);
 
@@ -751,7 +753,7 @@ static int show_machine(int argc, char *argv[], void *userdata) {
 
         properties = !strstr(argv[0], "status");
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         if (properties && argc <= 1) {
 
@@ -1089,7 +1091,7 @@ static int show_image(int argc, char *argv[], void *userdata) {
 
         properties = !strstr(argv[0], "status");
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         if (argc <= 1) {
 
@@ -1325,8 +1327,8 @@ static int process_forward(sd_event *event, PTYForward **forward, int master, PT
                         log_info("Connected to machine %s. Press ^] three times within 1s to exit session.", name);
         }
 
-        sd_event_add_signal(event, NULL, SIGINT, NULL, NULL);
-        sd_event_add_signal(event, NULL, SIGTERM, NULL, NULL);
+        (void) sd_event_add_signal(event, NULL, SIGINT, NULL, NULL);
+        (void) sd_event_add_signal(event, NULL, SIGTERM, NULL, NULL);
 
         r = pty_forward_new(event, master, flags, forward);
         if (r < 0)
@@ -1983,8 +1985,8 @@ static int transfer_image_common(sd_bus *bus, sd_bus_message *m) {
         if (!arg_quiet)
                 log_info("Enqueued transfer job %u. Press C-c to continue download in background.", id);
 
-        sd_event_add_signal(event, NULL, SIGINT, transfer_signal_handler, UINT32_TO_PTR(id));
-        sd_event_add_signal(event, NULL, SIGTERM, transfer_signal_handler, UINT32_TO_PTR(id));
+        (void) sd_event_add_signal(event, NULL, SIGINT, transfer_signal_handler, UINT32_TO_PTR(id));
+        (void) sd_event_add_signal(event, NULL, SIGTERM, transfer_signal_handler, UINT32_TO_PTR(id));
 
         r = sd_event_loop(event);
         if (r < 0)
@@ -2378,10 +2380,8 @@ typedef struct TransferInfo {
         double progress;
 } TransferInfo;
 
-static int compare_transfer_info(const void *a, const void *b) {
-        const TransferInfo *x = a, *y = b;
-
-        return strcmp(x->local, y->local);
+static int compare_transfer_info(const TransferInfo *a, const TransferInfo *b) {
+        return strcmp(a->local, b->local);
 }
 
 static int list_transfers(int argc, char *argv[], void *userdata) {
@@ -2396,7 +2396,7 @@ static int list_transfers(int argc, char *argv[], void *userdata) {
         double progress;
         int r;
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         r = sd_bus_call_method(bus,
                                "org.freedesktop.import1",
@@ -2449,7 +2449,7 @@ static int list_transfers(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        qsort_safe(transfers, n_transfers, sizeof(TransferInfo), compare_transfer_info);
+        typesafe_qsort(transfers, n_transfers, compare_transfer_info);
 
         if (arg_legend && n_transfers > 0)
                 printf("%-*s %-*s %-*s %-*s %-*s\n",
@@ -2612,7 +2612,7 @@ static int help(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *link = NULL;
         int r;
 
-        (void) pager_open(arg_no_pager, false);
+        (void) pager_open(arg_pager_flags);
 
         r = terminal_urlify_man("machinectl", "1", &link);
         if (r < 0)
@@ -2644,7 +2644,8 @@ static int help(int argc, char *argv[], void *userdata) {
                "  -o --output=STRING          Change journal output mode (short, short-precise,\n"
                "                               short-iso, short-iso-precise, short-full,\n"
                "                               short-monotonic, short-unix, verbose, export,\n"
-               "                               json, json-pretty, json-sse, cat)\n"
+               "                               json, json-pretty, json-sse, json-seq, cat,\n"
+               "                               with-unit)\n"
                "     --verify=MODE            Verification mode for downloaded images (no,\n"
                "                              checksum, signature)\n"
                "     --force                  Download image even if already exists\n\n"
@@ -2851,7 +2852,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_NO_PAGER:
-                        arg_no_pager = true;
+                        arg_pager_flags |= PAGER_DISABLE;
                         break;
 
                 case ARG_NO_LEGEND:
@@ -3031,6 +3032,10 @@ int main(int argc, char*argv[]) {
         setlocale(LC_ALL, "");
         log_parse_environment();
         log_open();
+
+        /* The journal merging logic potentially needs a lot of fds. */
+        (void) rlimit_nofile_bump(HIGH_RLIMIT_NOFILE);
+
         sigbus_install();
 
         r = parse_argv(argc, argv);

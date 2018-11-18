@@ -108,7 +108,7 @@ static inline void* PID_TO_PTR(pid_t pid) {
 
 void valgrind_summary_hack(void);
 
-int pid_compare_func(const void *a, const void *b);
+int pid_compare_func(const pid_t *a, const pid_t *b);
 
 static inline bool nice_is_valid(int n) {
         return n >= PRIO_MIN && n < PRIO_MAX;
@@ -132,13 +132,6 @@ static inline bool ioprio_priority_is_valid(int i) {
 
 static inline bool pid_is_valid(pid_t p) {
         return p > 0;
-}
-
-static inline int sched_policy_to_string_alloc_with_check(int n, char **s) {
-        if (!sched_policy_is_valid(n))
-                return -EINVAL;
-
-        return sched_policy_to_string_alloc(n, s);
 }
 
 int ioprio_parse_priority(const char *s, int *ret);
@@ -166,7 +159,9 @@ static inline int safe_fork(const char *name, ForkFlags flags, pid_t *ret_pid) {
         return safe_fork_full(name, NULL, 0, flags, ret_pid);
 }
 
-int fork_agent(const char *name, const int except[], size_t n_except, pid_t *pid, const char *path, ...);
+int namespace_fork(const char *outer_name, const char *inner_name, const int except_fds[], size_t n_except_fds, ForkFlags flags, int pidns_fd, int mntns_fd, int netns_fd, int userns_fd, int root_fd, pid_t *ret_pid);
+
+int fork_agent(const char *name, const int except[], size_t n_except, pid_t *pid, const char *path, ...) _sentinel_;
 
 int set_oom_score_adjust(int value);
 
